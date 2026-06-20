@@ -1,0 +1,105 @@
+FORMSPACE STL VIEWER
+Concise Application Guide
+
+1. OVERVIEW
+
+FormSpace is a web-based STL viewer for dental scanbody workflows. It uses a
+Python Flask backend and a Three.js 3D frontend.
+
+The application supports two STL categories:
+
+- Scan Body Library: accepts one STL file and renders it in blue.
+- Full-arch scans: accepts multiple STL files and renders them in green.
+
+
+2. STARTING THE APPLICATION
+
+Open Terminal and run:
+
+cd "/path/to/Git All-On-X Research Measurements"
+source .venv/bin/activate
+python app.py
+
+Then open:
+
+http://127.0.0.1:5000/
+
+Keep the Terminal window open while using the application.
+
+
+3. BASIC WORKFLOW
+
+1. Upload one reference STL under Scan Body Library.
+2. Upload one or more related STL files under Full-arch scans.
+3. Use the mouse to inspect the models:
+   - Left-drag: orbit
+   - Mouse wheel: zoom
+   - Right-drag: pan
+4. Use Fit View to frame all visible objects.
+5. Use the 3D Objects panel to show or hide individual objects.
+
+
+4. COORDINATE SYSTEM
+
+- The native origin of the Scan Body Library is the 3D scene origin.
+- Uploaded models keep their original STL coordinates.
+- Z is the vertical axis.
+- X and Y form the horizontal plane.
+- The grid is displayed on the XY plane at Z = 0.
+- FormSpace does not automatically align or register models.
+
+
+5. SCANBODY ISOLATION
+
+The Isolate Scanbodies button separates a combined scan STL into individual
+scanbody objects.
+
+Isolation process:
+
+1. Connected mesh triangles are grouped into components.
+2. Separate components within 5 mm of each other are merged into one scanbody.
+3. The original combined scan is replaced by the isolated objects.
+4. Objects are named using the original filename plus SB1, SB2, SB3, and so on.
+
+Example:
+
+Test scan.stl becomes:
+
+- Test scan SB1.stl
+- Test scan SB2.stl
+- Test scan SB3.stl
+- ...
+
+Each isolated scanbody can be shown or hidden independently.
+
+
+6. VIEWER CONTROLS
+
+- Fit View: frames all visible models.
+- Reset View: restores the default Z-up camera view.
+- Isolate Scanbodies: separates scanbody objects using connectivity and the
+  5 mm grouping rule.
+- Wireframe: toggles wireframe rendering.
+- Grid: shows or hides the XY reference grid.
+- Show All / Hide All: changes visibility for every 3D object.
+- Clear: removes all scan objects while preserving the library model.
+
+
+7. TECHNICAL DETAILS
+
+- Backend: Python and Flask
+- Frontend: HTML, CSS, and JavaScript
+- 3D engine: Three.js
+- Supported files: ASCII and binary STL
+- Maximum upload size: 500 MB per request
+- Uploaded files are stored locally in the uploads directory.
+
+
+8. CURRENT LIMITATIONS
+
+- Three.js is loaded from an online CDN.
+- Projects are not restored after the page is reloaded.
+- The 5 mm isolation distance is currently fixed.
+- Isolated objects cannot currently be exported as separate STL files.
+- Automatic scan-to-library registration is not included.
+- Flask's development server is intended for local use only.

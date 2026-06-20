@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Load and inspect multiple STL models in an interactive 3D workspace." />
+    <title>FormSpace — STL Viewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='25') }}" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="FormSpace home">
+          <span class="brand-mark">
+            <span></span><span></span><span></span>
+          </span>
+          <span>FormSpace</span>
+        </a>
+        <nav class="module-switcher" aria-label="Application modules">
+          <button class="module-tab active" data-module="data-processing" type="button">
+            <span>01</span> Data Processing
+          </button>
+          <button class="module-tab" data-module="accuracy-assessment" type="button">
+            <span>02</span> Accuracy Assessment
+          </button>
+        </nav>
+        <div class="topbar-meta">
+          <span class="status-dot"></span>
+          <span>LOCAL WORKSPACE</span>
+          <span class="divider"></span>
+          <span id="model-count">0 MODELS</span>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="sidebar">
+          <div id="data-processing-sidebar" class="module-sidebar">
+          <section class="intro">
+            <p class="eyebrow">3D STL VIEWER</p>
+            <h1>Inspect form.<br /><em>From every angle.</em></h1>
+            <p class="intro-copy">Load a scan body reference and its related full-arch scan files into one aligned 3D workspace.</p>
+          </section>
+
+          <section class="upload-section">
+            <div class="upload-heading">
+              <div>
+                <span class="upload-step">01</span>
+                <h2>Scan Body Library</h2>
+              </div>
+              <span class="upload-limit">1 FILE</span>
+            </div>
+            <input id="library-input" type="file" accept=".stl" hidden />
+            <button id="library-drop-zone" class="drop-zone library-zone" type="button">
+              <span class="upload-icon library-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5"/></svg>
+              </span>
+              <span class="drop-copy">
+                <span class="drop-title">Add library STL</span>
+                <span class="drop-subtitle">Drop or browse · replaces current file</span>
+              </span>
+            </button>
+
+            <div id="library-list" class="model-list grouped-list">
+              <div id="library-empty" class="empty-state compact">
+                <span class="empty-dot library-dot"></span>
+                <p>No library file loaded</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="upload-section scans-section">
+            <div class="upload-heading">
+              <div>
+                <span class="upload-step">02</span>
+                <h2>Full-arch scans</h2>
+              </div>
+              <span class="upload-limit">MULTIPLE</span>
+            </div>
+            <input id="scans-input" type="file" accept=".stl" multiple hidden />
+            <button id="scans-drop-zone" class="drop-zone scans-zone" type="button">
+              <span class="upload-icon scans-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5"/></svg>
+              </span>
+              <span class="drop-copy">
+                <span class="drop-title">Add full-arch scan STLs</span>
+                <span class="drop-subtitle">Drop or browse · select multiple files</span>
+              </span>
+            </button>
+
+            <div class="group-list-heading">
+              <span id="scans-label">0 FULL-ARCH SCAN FILES</span>
+              <button id="clear-scans" class="text-button" type="button" disabled>CLEAR</button>
+            </div>
+            <div id="scans-list" class="model-list grouped-list">
+              <div id="scans-empty" class="empty-state compact">
+                <span class="empty-dot scans-dot"></span>
+                <p>No full-arch scan files loaded</p>
+              </div>
+            </div>
+          </section>
+          </div>
+
+          <div id="accuracy-assessment-sidebar" class="module-sidebar" hidden>
+            <section class="intro">
+              <p class="eyebrow assessment-accent">ACCURACY ASSESSMENT</p>
+              <h1>Rebuild positions.<br /><em>Assess accuracy.</em></h1>
+              <p class="intro-copy">Import a scan body library, then organize transformation JSON files into one reference group and multiple test groups.</p>
+            </section>
+
+            <section class="upload-section assessment-stage library-stage">
+              <div class="upload-heading">
+                <div><span class="upload-step">01</span><h2>Library</h2></div>
+                <span class="upload-limit">1 STL</span>
+              </div>
+              <input id="assessment-library-input" type="file" accept=".stl" hidden />
+              <button id="assessment-library-zone" class="drop-zone assessment-library-zone" type="button">
+                <span class="upload-icon assessment-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5"/></svg>
+                </span>
+                <span class="drop-copy">
+                  <span class="drop-title">Import library STL</span>
+                  <span class="drop-subtitle">One library represents each scanbody</span>
+                </span>
+              </button>
+              <div id="assessment-library-status" class="import-status">No assessment library loaded</div>
+            </section>
+
+            <section class="upload-section assessment-stage reference-stage">
+              <div class="upload-heading">
+                <div><span class="upload-step">02</span><h2>Reference Data</h2></div>
+                <span class="upload-limit">MULTIPLE JSON</span>
+              </div>
+              <div id="assessment-data-groups" class="assessment-data-groups">
+                <article class="assessment-data-card reference-data-card" data-assessment-data-group="reference">
+                  <div class="assessment-data-card-header">
+                    <div>
+                      <span class="assessment-group-kind">REFERENCE</span>
+                      <strong>Reference group</strong>
+                    </div>
+                    <span id="reference-file-count" class="assessment-group-count">0 FILES</span>
+                  </div>
+                  <input id="reference-json-input" type="file" accept=".json,application/json" multiple hidden />
+                  <button id="reference-json-zone" class="assessment-group-add" type="button">
+                    <svg viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7zM14 3v5h5M10 14h5m-2.5-2.5v5"/></svg>
+                    Add reference JSON files
+                  </button>
+                  <div id="reference-file-list" class="assessment-file-list">
+                    <span class="assessment-files-empty">No files added</span>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section class="upload-section assessment-stage test-stage">
+              <div class="upload-heading">
+                <div><span class="upload-step">03</span><h2>Test Data</h2></div>
+                <button id="add-test-group" class="add-test-group-button" type="button">+ ADD GROUP</button>
+              </div>
+              <div id="test-groups-container" class="test-groups-container"></div>
+            </section>
+
+            <section class="assessment-summary">
+              <div class="section-heading"><span>RECONSTRUCTION</span></div>
+              <div class="assessment-metric"><span>TEST GROUPS</span><strong id="assessment-group-count">0</strong></div>
+              <div class="assessment-metric"><span>FULL-ARCH SCANS</span><strong id="assessment-scan-count">0</strong></div>
+              <div class="assessment-metric"><span>SCANBODIES</span><strong id="assessment-body-count">0</strong></div>
+              <button id="clear-assessment" class="assessment-clear" type="button" disabled>CLEAR ASSESSMENT</button>
+            </section>
+          </div>
+
+          <footer class="sidebar-footer">
+            <span>STL · ASCII / BINARY</span>
+            <span>MAX 500 MB</span>
+          </footer>
+        </aside>
+
+        <section class="viewport-panel">
+          <div class="viewport-toolbar">
+            <div class="tool-group">
+              <button id="fit-view" class="tool-button" type="button" title="Fit all models">
+                <svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+                Fit view
+              </button>
+              <button id="reset-view" class="tool-button icon-only" type="button" title="Reset view">
+                <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.35-5.65L4 8.7M4 4v4.7h4.7"/></svg>
+              </button>
+              <button id="center-library" class="tool-button library-view-button" type="button" disabled title="Center and frame the active library">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4M5 5l2.5 2.5M16.5 16.5 19 19M19 5l-2.5 2.5M7.5 16.5 5 19"/></svg>
+                Center Library
+              </button>
+              <button id="isolate-scanbodies" class="tool-button isolate-button data-processing-control" type="button" disabled title="Separate scanbodies and combine mesh pieces within 5 mm">
+                <svg viewBox="0 0 24 24"><path d="M8 8h8v8H8zM3 3h3v3H3zM18 3h3v3h-3zM3 18h3v3H3zM18 18h3v3h-3zM6 6l2 2m10-2-2 2M6 18l2-2m10 2-2-2"/></svg>
+                Isolate Scanbodies
+              </button>
+              <button id="register-scanbodies" class="tool-button register-button data-processing-control" type="button" disabled title="Run surface and principal-axis initial alignment">
+                <svg viewBox="0 0 24 24"><path d="M7 7h10v10H7zM3 12h4m10 0h4M12 3v4m0 10v4"/><circle cx="12" cy="12" r="2"/></svg>
+                1 Initial Alignment
+              </button>
+              <button id="refine-registration" class="tool-button register-button data-processing-control" type="button" disabled title="Refine prepared alignments with ICP and generate deviation maps">
+                <svg viewBox="0 0 24 24"><path d="M4 12h4l2-5 4 10 2-5h4"/><circle cx="12" cy="12" r="9"/></svg>
+                2 ICP &amp; Deviation
+              </button>
+              <button id="plane-refinement" class="tool-button register-button data-processing-control" type="button" disabled title="Match top and side planes using local Z translation and rotation only">
+                <svg viewBox="0 0 24 24"><path d="M4 18h16M6 14h12M9 10h6M12 3v7m0-7-3 3m3-3 3 3"/></svg>
+                3 Plane Refinement
+              </button>
+              <button id="show-registration-matrices" class="tool-button matrix-button data-processing-control" type="button" disabled title="View transformation matrices for registered scanbodies">
+                <svg viewBox="0 0 24 24"><path d="M7 4H4v16h3M17 4h3v16h-3M9 8h2m2 0h2M9 12h2m2 0h2M9 16h2m2 0h2"/></svg>
+                Matrices
+              </button>
+            </div>
+            <div class="tool-group">
+              <label class="toggle-control">
+                <input id="wireframe-toggle" type="checkbox" />
+                <span></span>
+                WIREFRAME
+              </label>
+              <label class="toggle-control">
+                <input id="grid-toggle" type="checkbox" checked />
+                <span></span>
+                GRID
+              </label>
+            </div>
+          </div>
+
+          <div id="viewer" class="viewer">
+            <canvas id="scene-canvas"></canvas>
+            <aside id="objects-panel" class="objects-panel" aria-label="3D objects">
+              <div class="objects-panel-header">
+                <div>
+                  <span class="objects-kicker">SCENE</span>
+                  <strong>3D Objects</strong>
+                </div>
+                <button id="objects-collapse" class="panel-icon-button" type="button" title="Collapse object list" aria-expanded="true">
+                  <svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></svg>
+                </button>
+              </div>
+              <div class="objects-panel-body">
+                <div class="objects-actions">
+                  <button id="show-all-objects" type="button" disabled>SHOW ALL</button>
+                  <button id="hide-all-objects" type="button" disabled>HIDE ALL</button>
+                </div>
+                <div id="objects-list" class="objects-list">
+                  <div id="data-objects-list">
+                    <div id="objects-empty" class="objects-empty">No objects loaded</div>
+                  </div>
+                  <div id="assessment-objects-list" hidden>
+                    <div id="assessment-objects-empty" class="objects-empty">Import a library STL and transformation JSON</div>
+                  </div>
+                </div>
+              </div>
+            </aside>
+            <div id="viewer-empty" class="viewer-empty">
+              <div class="empty-orbit">
+                <span class="orbit-one"></span>
+                <span class="orbit-two"></span>
+                <span class="orbit-core"></span>
+              </div>
+              <p>YOUR 3D SPACE IS READY</p>
+              <span>Add a scan body library file or full-arch scan to begin</span>
+            </div>
+            <div id="loading" class="loading" hidden>
+              <span class="spinner"></span>
+              <p>Processing geometry…</p>
+            </div>
+            <div id="toast-region" class="toast-region" aria-live="polite"></div>
+            <div id="deviation-legend" class="deviation-legend" hidden>
+              <div class="deviation-title">
+                <span>DEVIATION SCALE</span>
+                <label><input id="deviation-scale-number" type="number" min="0.05" max="100" step="0.05" value="0.50" /> mm</label>
+              </div>
+              <div class="deviation-gradient"></div>
+              <div class="deviation-labels"><span>0 mm</span><span id="deviation-max">0.50 mm+</span></div>
+              <input id="deviation-scale-range" class="deviation-scale-range" type="range" min="0.05" max="5" step="0.05" value="0.5" aria-label="Maximum deviation scale in millimeters" />
+            </div>
+            <div class="view-hint">
+              <span>DRAG TO ORBIT</span><span>SCROLL TO ZOOM</span><span>RIGHT-DRAG TO PAN</span>
+            </div>
+            <div class="axis-labels" aria-hidden="true">
+              <span class="origin-caption">LIBRARY ORIGIN</span>
+              <span class="axis x">X</span><span class="axis y">Y</span><span class="axis z">Z</span>
+            </div>
+          </div>
+
+          <div class="stats-bar">
+            <div class="stat"><span>TRIANGLES</span><strong id="triangle-count">—</strong></div>
+            <div class="stat"><span>SCENE SIZE</span><strong id="scene-size">—</strong></div>
+            <div class="stat"><span id="file-count-label">LIBRARY / FULL-ARCH</span><strong id="file-count">0 / 0</strong></div>
+            <div class="stats-note">Rendered locally in your browser</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="registration-matrix-window" class="matrix-window" hidden role="dialog" aria-modal="true" aria-labelledby="matrix-window-title">
+      <div class="matrix-window-card">
+        <header class="matrix-window-header">
+          <div>
+            <span>REGISTRATION DATA</span>
+            <h2 id="matrix-window-title">Transformation Matrices</h2>
+            <p>Library coordinates → registered scanbody coordinates</p>
+          </div>
+          <div class="matrix-window-actions">
+            <input id="registration-export-filename" class="matrix-filename-input" type="text" value="FormSpace_Registration_Matrices.json" aria-label="Export JSON filename" />
+            <button id="export-registration-matrices" class="matrix-export-button" type="button">
+              <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v4h14v-4"/></svg>
+              Export JSON
+            </button>
+            <button id="close-registration-matrices" class="matrix-close-button" type="button" aria-label="Close transformation matrices">
+              <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </header>
+        <div id="registration-matrix-list" class="matrix-window-list"></div>
+      </div>
+    </div>
+
+    <script type="module" src="{{ url_for('static', filename='app.js', v='30') }}"></script>
+  </body>
+</html>
