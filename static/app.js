@@ -4,6 +4,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 
 const canvas = document.querySelector("#scene-canvas");
 const viewer = document.querySelector("#viewer");
+const objectHoverLabel = document.querySelector("#object-hover-label");
 const libraryInput = document.querySelector("#library-input");
 const scansInput = document.querySelector("#scans-input");
 const libraryDropZone = document.querySelector("#library-drop-zone");
@@ -37,14 +38,28 @@ const registrationMatricesButton = document.querySelector("#show-registration-ma
 const registrationMatrixWindow = document.querySelector("#registration-matrix-window");
 const registrationMatrixList = document.querySelector("#registration-matrix-list");
 const registrationExportFilename = document.querySelector("#registration-export-filename");
+const assessmentAlignmentReportButton = document.querySelector("#show-assessment-alignment-report");
+const assessmentAlignmentWindow = document.querySelector("#assessment-alignment-window");
+const assessmentAlignmentList = document.querySelector("#assessment-alignment-list");
+const reportPanel = document.querySelector("#report-panel");
+const reportContent = document.querySelector("#report-content");
+const reportSummaryCards = document.querySelector("#report-summary-cards");
+const reportSidebarSummary = document.querySelector("#report-sidebar-summary");
+const viewportPanel = document.querySelector(".viewport-panel");
+const viewportToolbar = document.querySelector("#viewport-toolbar");
+const statsBar = document.querySelector(".stats-bar");
 const assessmentLibraryInput = document.querySelector("#assessment-library-input");
 const assessmentLibraryZone = document.querySelector("#assessment-library-zone");
 const assessmentLibraryStatus = document.querySelector("#assessment-library-status");
 const referenceJsonInput = document.querySelector("#reference-json-input");
 const referenceJsonZone = document.querySelector("#reference-json-zone");
 const referenceFileList = document.querySelector("#reference-file-list");
+const referenceGroupColor = document.querySelector("#reference-group-color");
 const testGroupsContainer = document.querySelector("#test-groups-container");
 const addTestGroupButton = document.querySelector("#add-test-group");
+const initialAssessmentAlignmentButton = document.querySelector("#initial-assessment-alignment");
+const refinedAssessmentAlignmentButton = document.querySelector("#refined-assessment-alignment");
+const assessmentRegistrationStatus = document.querySelector("#assessment-registration-status");
 const clearAssessmentButton = document.querySelector("#clear-assessment");
 let activeModule = "data-processing";
 
@@ -54,6 +69,8 @@ scene.fog = new THREE.FogExp2(0x171918, 0.0014);
 const camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000000);
 camera.up.set(0, 0, 1);
 camera.position.set(120, 150, 95);
+const hoverRaycaster = new THREE.Raycaster();
+const hoverPointer = new THREE.Vector2();
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -85,17 +102,6 @@ grid.material.opacity = 0.38;
 grid.material.transparent = true;
 scene.add(grid);
 
-const axes = new THREE.AxesHelper(50);
-axes.renderOrder = 3;
-scene.add(axes);
-
-const originMarker = new THREE.Mesh(
-  new THREE.SphereGeometry(1.2, 20, 20),
-  new THREE.MeshBasicMaterial({ color: 0xffffff }),
-);
-originMarker.renderOrder = 4;
-scene.add(originMarker);
-
 const modelsGroup = new THREE.Group();
 scene.add(modelsGroup);
 const assessmentGroup = new THREE.Group();
@@ -111,6 +117,7 @@ const assessmentDataGroups = new Map();
 let assessmentLibrary = null;
 let nextAssessmentTestGroup = 1;
 let deviationScaleMaximum = 0.5;
+const ASSESSMENT_GROUP_COLORS = ["#ffb35c", "#70e39f", "#ff72a8", "#b897ff", "#ffe066", "#56a8ff"];
 const TYPE_CONFIG = {
   library: { color: 0x4f8fff, label: "LIBRARY" },
   scan: { color: 0x42d890, label: "FULL-ARCH SCAN" },
@@ -118,6 +125,55 @@ const TYPE_CONFIG = {
   "assessment-library": { color: 0xc488ff, label: "ASSESSMENT LIBRARY" },
   "assessment-scanbody": { color: 0x56d8ff, label: "RECONSTRUCTED SCANBODY" },
 };
+const LIBRARY_ORIGIN_TYPES = new Set([
+  "library",
+  "registered",
+  "assessment-library",
+  "assessment-scanbody",
+]);
+
+function addLocalOriginAxes(entry) {
+  if (!LIBRARY_ORIGIN_TYPES.has(entry.type) || entry.originAxes) return;
+  const maximumDimension = Math.max(entry.size.x, entry.size.y, entry.size.z, 0.1);
+  const originAxes = new THREE.AxesHelper(maximumDimension * 0.2);
+  const originSphereColor = entry.color instanceof THREE.Color
+    ? entry.color.clone()
+    : entry.mesh.material.color.clone();
+  const originSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.05, 16, 12),
+    new THREE.MeshBasicMaterial({
+      color: originSphereColor,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  originAxes.name = "library-local-origin";
+  originAxes.renderOrder = 10;
+  originAxes.material.depthTest = false;
+  originAxes.material.depthWrite = false;
+  originAxes.material.transparent = true;
+  originAxes.material.opacity = 0.95;
+  originSphere.name = "library-local-origin-sphere";
+  originSphere.renderOrder = 11;
+  entry.mesh.add(originAxes);
+  entry.mesh.add(originSphere);
+  entry.originAxes = originAxes;
+  entry.originSphere = originSphere;
+}
+
+function disposeLocalOriginAxes(entry) {
+  if (!entry.originAxes) return;
+  entry.mesh.remove(entry.originAxes);
+  entry.originAxes.geometry.dispose();
+  entry.originAxes.material.dispose();
+  entry.originAxes = null;
+  if (entry.originSphere) {
+    entry.mesh.remove(entry.originSphere);
+    entry.originSphere.geometry.dispose();
+    entry.originSphere.material.dispose();
+    entry.originSphere = null;
+  }
+}
 
 function resizeRenderer() {
   const width = viewer.clientWidth;
@@ -126,6 +182,62 @@ function resizeRenderer() {
   renderer.setSize(width, height, false);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
+}
+
+function hideObjectHoverLabel() {
+  objectHoverLabel.hidden = true;
+  objectHoverLabel.textContent = "";
+}
+
+function activeHoverEntries() {
+  const source = activeModule === "accuracy-assessment" ? assessmentModels : models;
+  return [...source.values()].filter((entry) => (
+    entry.mesh
+    && entry.mesh.visible
+    && entry.userVisible !== false
+  ));
+}
+
+function positionObjectHoverLabel(event) {
+  const viewerRect = viewer.getBoundingClientRect();
+  const offset = 14;
+  const labelWidth = objectHoverLabel.offsetWidth;
+  const labelHeight = objectHoverLabel.offsetHeight;
+  const maximumX = Math.max(viewerRect.width - labelWidth - 8, 8);
+  const maximumY = Math.max(viewerRect.height - labelHeight - 8, 8);
+  const x = THREE.MathUtils.clamp(event.clientX - viewerRect.left + offset, 8, maximumX);
+  const y = THREE.MathUtils.clamp(event.clientY - viewerRect.top + offset, 8, maximumY);
+  objectHoverLabel.style.transform = `translate(${x}px, ${y}px)`;
+}
+
+function updateObjectHoverLabel(event) {
+  const entries = activeHoverEntries();
+  if (!entries.length) {
+    hideObjectHoverLabel();
+    return;
+  }
+
+  const canvasRect = canvas.getBoundingClientRect();
+  hoverPointer.x = ((event.clientX - canvasRect.left) / canvasRect.width) * 2 - 1;
+  hoverPointer.y = -(((event.clientY - canvasRect.top) / canvasRect.height) * 2 - 1);
+  hoverRaycaster.setFromCamera(hoverPointer, camera);
+
+  const meshes = entries.map((entry) => entry.mesh);
+  const intersections = hoverRaycaster.intersectObjects(meshes, false);
+  if (!intersections.length) {
+    hideObjectHoverLabel();
+    return;
+  }
+
+  const hoveredEntry = entries.find((entry) => entry.mesh === intersections[0].object);
+  if (!hoveredEntry) {
+    hideObjectHoverLabel();
+    return;
+  }
+
+  objectHoverLabel.textContent = hoveredEntry.name;
+  objectHoverLabel.hidden = false;
+  positionObjectHoverLabel(event);
 }
 
 function formatBytes(bytes) {
@@ -268,10 +380,6 @@ function updateSceneReference() {
     : Math.max(...entries.map((entry) => Math.max(entry.size.x, entry.size.y, entry.size.z)), 10);
   const gridSize = Math.max(referenceSize, 10) * 3;
   grid.scale.setScalar(gridSize / 200);
-  axes.scale.setScalar((Math.max(referenceSize, 10) / 50) * 20);
-  originMarker.scale.setScalar(Math.max(referenceSize, 10) / 100);
-  axes.visible = Boolean(library);
-  originMarker.visible = Boolean(library);
   updateUI();
 }
 
@@ -469,6 +577,7 @@ function removeModel(id, refit = true) {
   const entry = models.get(id);
   if (!entry) return;
   modelsGroup.remove(entry.mesh);
+  disposeLocalOriginAxes(entry);
   entry.mesh.geometry.dispose();
   entry.mesh.material.dispose();
   entry.row?.remove();
@@ -532,6 +641,7 @@ function addModelFromGeometry({ geometry, id, name, bytes, type, isolated = fals
     objectRow: null,
     userVisible: true,
   };
+  addLocalOriginAxes(entry);
 
   models.set(entry.id, entry);
   modelsGroup.add(mesh);
@@ -1186,6 +1296,7 @@ function setMeshTransform(mesh, matrix) {
 }
 
 function deviationColor(value) {
+  if (value > 1) return new THREE.Color(0xd83bff);
   const stops = [
     [0, new THREE.Color(0x2457ff)],
     [0.25, new THREE.Color(0x22d3ee)],
@@ -1208,7 +1319,7 @@ function colorizeDeviationEntry(scanEntry, maximum = deviationScaleMaximum) {
   const position = scanEntry.mesh.geometry.getAttribute("position");
   const colors = new Float32Array(position.count * 3);
   scanEntry.deviationDistances.forEach((distance, index) => {
-    const color = deviationColor(Math.min(distance / maximum, 1));
+    const color = deviationColor(distance / maximum);
     colors[index * 3] = color.r;
     colors[index * 3 + 1] = color.g;
     colors[index * 3 + 2] = color.b;
@@ -1231,6 +1342,10 @@ function setDeviationScale(value) {
   models.forEach((entry) => {
     if (entry.type === "scan" && entry.deviationDistances) colorizeDeviationEntry(entry, maximum);
   });
+  assessmentModels.forEach((entry) => {
+    if (entry.type === "assessment-scanbody" && entry.deviationDistances) colorizeDeviationEntry(entry, maximum);
+  });
+  renderReportModule();
 }
 
 function matrixRows(matrix) {
@@ -1386,7 +1501,7 @@ function registrationExportData() {
   });
 
   return {
-    format: "FormSpace Registration Matrices",
+    format: "OnXTrue Registration Matrices",
     version: 1,
     exported_at: new Date().toISOString(),
     matrix_definition: "Each 4x4 matrix transforms a point from original Scan Body Library coordinates into the registered scanbody coordinate system.",
@@ -1410,7 +1525,7 @@ async function exportRegistrationMatrices() {
   const contents = `${JSON.stringify(data, null, 2)}\n`;
   const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
   const enteredName = registrationExportFilename.value.trim();
-  const baseName = enteredName || `FormSpace_Registration_Matrices_${timestamp}.json`;
+  const baseName = enteredName || `OnXTrue_Registration_Matrices_${timestamp}.json`;
   const suggestedName = baseName.toLowerCase().endsWith(".json") ? baseName : `${baseName}.json`;
   registrationExportFilename.value = suggestedName;
 
@@ -1449,7 +1564,7 @@ async function exportRegistrationMatrices() {
 function openRegistrationMatrices() {
   renderRegistrationMatrices();
   if (!registrationExportFilename.value.trim()) {
-    registrationExportFilename.value = "FormSpace_Registration_Matrices.json";
+    registrationExportFilename.value = "OnXTrue_Registration_Matrices.json";
   }
   registrationMatrixWindow.hidden = false;
   document.body.classList.add("modal-open");
@@ -1458,6 +1573,253 @@ function openRegistrationMatrices() {
 function closeRegistrationMatrices() {
   registrationMatrixWindow.hidden = true;
   document.body.classList.remove("modal-open");
+}
+
+function formatMicrometers(valueMillimeters) {
+  return `${(Number(valueMillimeters || 0) * 1000).toFixed(2)} µm`;
+}
+
+function renderAssessmentAlignmentReport() {
+  const testDatasets = [...assessmentDataGroups.values()].filter((dataset) => dataset.type === "test");
+  const alignedScans = testDatasets.flatMap((dataset) => (
+    assessmentScansForDataset(dataset.id)
+      .filter(({ scan }) => scan.assessmentRegistration?.scanbodyDistances?.length)
+      .map((item) => ({ ...item, dataset }))
+  ));
+
+  if (!alignedScans.length) {
+    assessmentAlignmentList.innerHTML = '<div class="matrix-empty">Run initial alignment to view scanbody distances.</div>';
+    return;
+  }
+
+  assessmentAlignmentList.innerHTML = alignedScans.map(({ scan, fileRecord, dataset }) => {
+    const registration = scan.assessmentRegistration;
+    const rows = registration.scanbodyDistances.map((item) => `
+      <div class="alignment-report-row">
+        <span>${escapeHTML(`SB${item.index}`)}</span>
+        <span>${escapeHTML(item.sourceName)}</span>
+        <span>${escapeHTML(item.targetName)}</span>
+        <strong>${formatMicrometers(item.distance)}</strong>
+      </div>
+    `).join("");
+    return `
+      <section class="matrix-scan-group alignment-report-group">
+        <div class="alignment-report-header">
+          <div>
+            <strong>${escapeHTML(scan.name)}</strong>
+            <small>${escapeHTML(dataset.name)} · ${escapeHTML(fileRecord.name)} · matched to ${escapeHTML(registration.referenceScanName)}</small>
+          </div>
+          <span>${registration.refined ? "ICP RMS" : "RMS"} ${formatMicrometers(registration.refined?.rms || registration.rms)}</span>
+        </div>
+        <div class="alignment-report-table">
+          <div class="alignment-report-row heading">
+            <span>SB</span>
+            <span>Test scanbody</span>
+            <span>Reference scanbody</span>
+            <span>Distance (µm)</span>
+          </div>
+          ${rows}
+        </div>
+      </section>`;
+  }).join("");
+}
+
+function openAssessmentAlignmentReport() {
+  renderAssessmentAlignmentReport();
+  assessmentAlignmentWindow.hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+function closeAssessmentAlignmentReport() {
+  assessmentAlignmentWindow.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function percentile(sorted, value) {
+  if (!sorted.length) return 0;
+  const index = (sorted.length - 1) * value;
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (index - lower);
+}
+
+function deviationStats(distances) {
+  if (!distances.length) return null;
+  const sorted = distances.slice().sort((first, second) => first - second);
+  const count = sorted.length;
+  const sum = sorted.reduce((total, value) => total + value, 0);
+  const mean = sum / count;
+  const squaredSum = sorted.reduce((total, value) => total + value * value, 0);
+  const variance = sorted.reduce((total, value) => total + (value - mean) ** 2, 0) / count;
+  return {
+    count,
+    min: sorted[0],
+    q1: percentile(sorted, 0.25),
+    median: percentile(sorted, 0.5),
+    q3: percentile(sorted, 0.75),
+    max: sorted[count - 1],
+    mean,
+    sd: Math.sqrt(variance),
+    rms: Math.sqrt(squaredSum / count),
+  };
+}
+
+function collectAssessmentReportData() {
+  return [...assessmentDataGroups.values()]
+    .filter((dataset) => dataset.type === "test")
+    .map((dataset) => {
+      const scans = assessmentScansForDataset(dataset.id)
+        .map(({ scan, fileRecord }) => {
+          const distances = (scan.assessmentRegistration?.scanbodyDistances || [])
+            .map((item) => Number(item.distance))
+            .filter(Number.isFinite);
+          return {
+            id: `${fileRecord.id}-${scan.id}`,
+            name: scan.name,
+            sourceFileName: fileRecord.name,
+            registration: scan.assessmentRegistration || null,
+            distances,
+            stats: deviationStats(distances),
+          };
+        })
+        .filter((scan) => scan.stats);
+      const distances = scans.flatMap((scan) => scan.distances);
+      return {
+        id: dataset.id,
+        name: dataset.name,
+        color: dataset.color,
+        scans,
+        stats: deviationStats(distances),
+      };
+    })
+    .filter((dataset) => dataset.stats);
+}
+
+function reportBoxPlotSvg(stats, scaleMax) {
+  const width = 420;
+  const height = 72;
+  const axisStart = 32;
+  const axisEnd = 392;
+  const y = 36;
+  const x = (value) => axisStart + (Math.max(0, Math.min(value, scaleMax)) / Math.max(scaleMax, 0.0001)) * (axisEnd - axisStart);
+  const minX = x(stats.min);
+  const q1X = x(stats.q1);
+  const medianX = x(stats.median);
+  const q3X = x(stats.q3);
+  const maxX = x(stats.max);
+  const meanX = x(stats.mean);
+  return `
+    <svg class="report-boxplot" viewBox="0 0 ${width} ${height}" role="img" aria-label="Deviation box plot">
+      <line x1="${axisStart}" y1="${y}" x2="${axisEnd}" y2="${y}" />
+      <line x1="${minX}" y1="${y - 11}" x2="${minX}" y2="${y + 11}" />
+      <line x1="${maxX}" y1="${y - 11}" x2="${maxX}" y2="${y + 11}" />
+      <rect x="${q1X}" y="${y - 14}" width="${Math.max(1, q3X - q1X)}" height="28" rx="2" />
+      <line class="median" x1="${medianX}" y1="${y - 17}" x2="${medianX}" y2="${y + 17}" />
+      <circle class="mean" cx="${meanX}" cy="${y}" r="4" />
+      <text x="${axisStart}" y="66">0</text>
+      <text x="${axisEnd}" y="66" text-anchor="end">${formatMicrometers(scaleMax)}</text>
+    </svg>`;
+}
+
+function renderReportModule() {
+  const groups = collectAssessmentReportData();
+  if (!groups.length) {
+    reportSummaryCards.innerHTML = "";
+    reportContent.innerHTML = '<div class="report-empty">Run 1 Initial Alignment or 2 Refined Alignment to generate report statistics.</div>';
+    reportSidebarSummary.textContent = "No alignment report data yet.";
+    return;
+  }
+
+  const allDistances = groups.flatMap((group) => group.scans.flatMap((scan) => scan.distances));
+  const overall = deviationStats(allDistances);
+  const scaleMax = Math.max(...groups.flatMap((group) => [
+    group.stats.max,
+    ...group.scans.map((scan) => scan.stats.max),
+  ]), 0.001);
+  const totalScans = groups.reduce((sum, group) => sum + group.scans.length, 0);
+  reportSidebarSummary.textContent =
+    `${groups.length} test group${groups.length === 1 ? "" : "s"} · ${totalScans} aligned scan${totalScans === 1 ? "" : "s"} · overall mean ${formatMicrometers(overall.mean)}`;
+
+  reportSummaryCards.innerHTML = [
+    ["Test groups", groups.length],
+    ["Aligned scans", totalScans],
+    ["Overall mean", formatMicrometers(overall.mean)],
+    ["Overall RMS", formatMicrometers(overall.rms)],
+  ].map(([label, value]) => `
+    <div class="report-summary-card">
+      <span>${escapeHTML(String(label))}</span>
+      <strong>${escapeHTML(String(value))}</strong>
+    </div>
+  `).join("");
+
+  reportContent.innerHTML = groups.map((group) => {
+    const rows = group.scans.map((scan) => `
+      <tr>
+        <td>${escapeHTML(scan.name)}</td>
+        <td>${escapeHTML(scan.sourceFileName || "JSON")}</td>
+        <td>${scan.stats.count.toLocaleString()}</td>
+        <td>${formatMicrometers(scan.stats.mean)}</td>
+        <td>${formatMicrometers(scan.stats.median)}</td>
+        <td>${formatMicrometers(scan.stats.sd)}</td>
+        <td>${formatMicrometers(scan.stats.rms)}</td>
+        <td>${formatMicrometers(scan.stats.q1)} / ${formatMicrometers(scan.stats.q3)}</td>
+        <td>${formatMicrometers(scan.stats.max)}</td>
+      </tr>
+    `).join("");
+    const plots = group.scans.map((scan) => `
+      <article class="report-plot">
+        <div>
+          <strong>${escapeHTML(scan.name)}</strong>
+          <span>${escapeHTML(scan.registration?.referenceScanName || "Reference scan")}</span>
+        </div>
+        ${reportBoxPlotSvg(scan.stats, scaleMax)}
+      </article>
+    `).join("");
+    const combinedPlot = `
+      <article class="report-plot report-plot-combined">
+        <div>
+          <strong>${escapeHTML(group.name)} combined</strong>
+          <span>${group.stats.count.toLocaleString()} scanbody distances from all aligned scans</span>
+        </div>
+        ${reportBoxPlotSvg(group.stats, scaleMax)}
+      </article>
+    `;
+    return `
+      <section class="report-group">
+        <header class="report-group-header">
+          <div>
+            <span style="color:${group.color}">TEST GROUP</span>
+            <h3>${escapeHTML(group.name)}</h3>
+          </div>
+          <div class="report-group-stats">
+            <span>Mean ${formatMicrometers(group.stats.mean)}</span>
+            <span>Median ${formatMicrometers(group.stats.median)}</span>
+            <span>RMS ${formatMicrometers(group.stats.rms)}</span>
+            <span>Max ${formatMicrometers(group.stats.max)}</span>
+          </div>
+        </header>
+        <div class="report-table-wrap">
+          <table class="report-table">
+            <thead>
+              <tr>
+                <th>Scan</th>
+                <th>File</th>
+                <th>Scanbodies</th>
+                <th>Mean</th>
+                <th>Median</th>
+                <th>SD</th>
+                <th>RMS</th>
+                <th>Q1 / Q3</th>
+                <th>Max</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div class="report-plots">${combinedPlot}${plots}</div>
+      </section>`;
+  }).join("");
 }
 
 function applyDeviationMap(scanEntry, libraryGeometry, registrationMatrix) {
@@ -1478,6 +1840,273 @@ function isolatedName(originalName, index) {
   const extensionIndex = originalName.toLowerCase().lastIndexOf(".stl");
   const baseName = extensionIndex === -1 ? originalName : originalName.slice(0, extensionIndex);
   return `${baseName} SB${index}.stl`;
+}
+
+function sequencedScanbodyName(fullArchName, index) {
+  const extensionIndex = fullArchName.toLowerCase().lastIndexOf(".stl");
+  const baseName = extensionIndex === -1 ? fullArchName : fullArchName.slice(0, extensionIndex);
+  return `${baseName}_SB${index}.stl`;
+}
+
+function setEntryName(entry, name) {
+  entry.name = name;
+  const modelName = entry.row?.querySelector(".model-name");
+  if (modelName) {
+    modelName.textContent = name;
+    modelName.title = name;
+  }
+  const objectName = entry.objectRow?.querySelector(".object-name");
+  if (objectName) {
+    objectName.textContent = name;
+    objectName.title = name;
+  }
+  const visibilityLabel = entry.objectRow?.querySelector(".visibility-switch");
+  if (visibilityLabel) visibilityLabel.title = `Show or hide ${name}`;
+  const visibilityInput = entry.objectRow?.querySelector("input");
+  if (visibilityInput) visibilityInput.setAttribute("aria-label", `Show ${name}`);
+}
+
+function symmetricEigenvectors3(input) {
+  const matrix = input.map((row) => row.slice());
+  const eigenvectors = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ];
+
+  for (let iteration = 0; iteration < 50; iteration += 1) {
+    let pivotRow = 0;
+    let pivotColumn = 1;
+    let maximum = 0;
+    for (let row = 0; row < 3; row += 1) {
+      for (let column = row + 1; column < 3; column += 1) {
+        const value = Math.abs(matrix[row][column]);
+        if (value > maximum) {
+          maximum = value;
+          pivotRow = row;
+          pivotColumn = column;
+        }
+      }
+    }
+    if (maximum < 1e-12) break;
+
+    const app = matrix[pivotRow][pivotRow];
+    const aqq = matrix[pivotColumn][pivotColumn];
+    const apq = matrix[pivotRow][pivotColumn];
+    const angle = 0.5 * Math.atan2(2 * apq, aqq - app);
+    const cosine = Math.cos(angle);
+    const sine = Math.sin(angle);
+
+    for (let index = 0; index < 3; index += 1) {
+      if (index === pivotRow || index === pivotColumn) continue;
+      const rowValue = matrix[index][pivotRow];
+      const columnValue = matrix[index][pivotColumn];
+      matrix[index][pivotRow] = rowValue * cosine - columnValue * sine;
+      matrix[pivotRow][index] = matrix[index][pivotRow];
+      matrix[index][pivotColumn] = rowValue * sine + columnValue * cosine;
+      matrix[pivotColumn][index] = matrix[index][pivotColumn];
+    }
+
+    matrix[pivotRow][pivotRow] = app * cosine * cosine - 2 * apq * cosine * sine + aqq * sine * sine;
+    matrix[pivotColumn][pivotColumn] = app * sine * sine + 2 * apq * cosine * sine + aqq * cosine * cosine;
+    matrix[pivotRow][pivotColumn] = 0;
+    matrix[pivotColumn][pivotRow] = 0;
+
+    for (let index = 0; index < 3; index += 1) {
+      const rowValue = eigenvectors[index][pivotRow];
+      const columnValue = eigenvectors[index][pivotColumn];
+      eigenvectors[index][pivotRow] = rowValue * cosine - columnValue * sine;
+      eigenvectors[index][pivotColumn] = rowValue * sine + columnValue * cosine;
+    }
+  }
+
+  return [0, 1, 2]
+    .map((index) => ({
+      value: matrix[index][index],
+      vector: new THREE.Vector3(
+        eigenvectors[0][index],
+        eigenvectors[1][index],
+        eigenvectors[2][index],
+      ).normalize(),
+    }))
+    .sort((first, second) => second.value - first.value);
+}
+
+function archProjection(records) {
+  const center = pointCentroid(records.map((record) => record.center));
+  const covariance = Array.from({ length: 3 }, () => [0, 0, 0]);
+  records.forEach((record) => {
+    const point = record.center.clone().sub(center);
+    covariance[0][0] += point.x * point.x;
+    covariance[0][1] += point.x * point.y;
+    covariance[0][2] += point.x * point.z;
+    covariance[1][0] += point.y * point.x;
+    covariance[1][1] += point.y * point.y;
+    covariance[1][2] += point.y * point.z;
+    covariance[2][0] += point.z * point.x;
+    covariance[2][1] += point.z * point.y;
+    covariance[2][2] += point.z * point.z;
+  });
+  const axes = symmetricEigenvectors3(covariance);
+  const xAxis = axes[0]?.vector || new THREE.Vector3(1, 0, 0);
+  const yAxis = axes[1]?.vector || new THREE.Vector3(0, 1, 0);
+  return records.map((record, index) => {
+    const point = record.center.clone().sub(center);
+    return {
+      index,
+      x: point.dot(xAxis),
+      y: point.dot(yAxis),
+    };
+  });
+}
+
+function projectedDistance(first, second) {
+  return Math.hypot(first.x - second.x, first.y - second.y);
+}
+
+function archPathScore(path, projected) {
+  let length = 0;
+  const segments = [];
+  for (let index = 1; index < path.length; index += 1) {
+    const previous = projected[path[index - 1]];
+    const current = projected[path[index]];
+    const segmentLength = projectedDistance(previous, current);
+    length += segmentLength;
+    segments.push({
+      x: current.x - previous.x,
+      y: current.y - previous.y,
+      length: segmentLength,
+    });
+  }
+  let turnAngle = 0;
+  for (let index = 1; index < segments.length; index += 1) {
+    const first = segments[index - 1];
+    const second = segments[index];
+    if (first.length < 1e-8 || second.length < 1e-8) continue;
+    const dot = THREE.MathUtils.clamp(
+      (first.x * second.x + first.y * second.y) / (first.length * second.length),
+      -1,
+      1,
+    );
+    turnAngle += Math.acos(dot);
+  }
+  const averageSegment = segments.length ? length / segments.length : 0;
+  return length + turnAngle * averageSegment * 0.75;
+}
+
+function smoothestArchPath(records) {
+  if (records.length <= 2) return records.map((_, index) => index);
+  const projected = archProjection(records);
+  if (records.length > 8) {
+    const remaining = new Set(records.map((_, index) => index));
+    const path = [0];
+    remaining.delete(0);
+    while (remaining.size) {
+      const last = projected[path[path.length - 1]];
+      const next = [...remaining]
+        .sort((first, second) => projectedDistance(last, projected[first]) - projectedDistance(last, projected[second]))[0];
+      path.push(next);
+      remaining.delete(next);
+    }
+    return path;
+  }
+
+  let bestPath = null;
+  let bestScore = Infinity;
+  function visit(path, remaining) {
+    if (!remaining.length) {
+      const score = archPathScore(path, projected);
+      if (score < bestScore) {
+        bestScore = score;
+        bestPath = path.slice();
+      }
+      return;
+    }
+    remaining.forEach((value, index) => {
+      path.push(value);
+      visit(path, remaining.filter((_, remainingIndex) => remainingIndex !== index));
+      path.pop();
+    });
+  }
+
+  visit([], records.map((_, index) => index));
+  return bestPath || records.map((_, index) => index);
+}
+
+function orderedArchRecords(records) {
+  if (records.length <= 1) return records;
+  const path = smoothestArchPath(records);
+  if (path.length < 3) return path.map((index) => records[index]);
+
+  const first = records[path[0]];
+  const last = records[path[path.length - 1]];
+  const closestToFirst = path.slice(1)
+    .map((index) => records[index])
+    .sort((left, right) => (
+      left.center.distanceToSquared(first.center) - right.center.distanceToSquared(first.center)
+    ))[0];
+
+  const virtualX = last.center.clone().sub(first.center);
+  const toClosest = closestToFirst.center.clone().sub(first.center);
+  const virtualZ = virtualX.clone().cross(toClosest);
+  if (virtualX.lengthSq() < 1e-8 || virtualZ.lengthSq() < 1e-8) {
+    return path.map((index) => records[index]);
+  }
+  virtualZ.normalize();
+  const dot = closestToFirst.localZ.dot(virtualZ);
+  const orderedPath = dot >= 0 ? path : path.slice().reverse();
+  return orderedPath.map((index) => records[index]);
+}
+
+function renameScanbodySequenceForGroup(library, groupId) {
+  const group = scanGroups.get(groupId);
+  if (!group) return { renamed: 0, ambiguous: false };
+  library.mesh.geometry.computeBoundingBox();
+  const libraryCenter = library.mesh.geometry.boundingBox.getCenter(new THREE.Vector3());
+  const registeredCopies = [...models.values()]
+    .filter((entry) => (
+      entry.type === "registered"
+      && entry.groupId === groupId
+      && entry.planeRefinementCompleted
+      && entry.registrationMatrix
+      && entry.registrationFor
+    ));
+  const records = registeredCopies.map((registeredCopy) => {
+    const scanbody = models.get(registeredCopy.registrationFor);
+    if (!scanbody) return null;
+    const rotation = new THREE.Quaternion();
+    registeredCopy.registrationMatrix.decompose(new THREE.Vector3(), rotation, new THREE.Vector3());
+    return {
+      registeredCopy,
+      scanbody,
+      center: libraryCenter.clone().applyMatrix4(registeredCopy.registrationMatrix),
+      localZ: new THREE.Vector3(0, 0, 1).applyQuaternion(rotation).normalize(),
+    };
+  }).filter(Boolean);
+
+  if (!records.length) return { renamed: 0, ambiguous: false };
+  const orderedRecords = orderedArchRecords(records);
+  orderedRecords.forEach((record, index) => {
+    const name = sequencedScanbodyName(group.name, index + 1);
+    setEntryName(record.scanbody, name);
+    record.registeredCopy.registrationTargetName = name;
+    const libraryName = (record.registeredCopy.registrationSourceName || library.name).replace(/\.stl$/i, "");
+    const targetName = name.replace(/\.stl$/i, "");
+    setEntryName(record.registeredCopy, `${libraryName} → ${targetName}`);
+  });
+  return { renamed: orderedRecords.length, ambiguous: records.length < 3 };
+}
+
+function renamePlaneRefinedScanbodySequences(library, groupIds) {
+  let renamed = 0;
+  let ambiguous = 0;
+  [...new Set(groupIds)].forEach((groupId) => {
+    const result = renameScanbodySequenceForGroup(library, groupId);
+    renamed += result.renamed;
+    if (result.ambiguous) ambiguous += 1;
+  });
+  if (!registrationMatrixWindow.hidden) renderRegistrationMatrices();
+  return { renamed, ambiguous };
 }
 
 async function isolateScanbodies() {
@@ -1644,6 +2273,7 @@ async function refineRegistrationPlanes() {
     let refinedCount = 0;
     let partialCount = 0;
     let unchangedCount = 0;
+    const refinedGroupIds = new Set();
     for (let index = 0; index < registeredCopies.length; index += 1) {
       const registeredCopy = registeredCopies[index];
       const scanbody = models.get(registeredCopy.registrationFor);
@@ -1683,11 +2313,19 @@ async function refineRegistrationPlanes() {
       }
       applyDeviationMap(scanbody, library.mesh.geometry, result.matrix);
       updateGroupState(scanbody.groupId);
+      refinedGroupIds.add(scanbody.groupId);
     }
+    const renameResult = renamePlaneRefinedScanbodySequences(library, refinedGroupIds);
     setDeviationScale(0.5);
     updateUI();
+    const renameMessage = renameResult.renamed
+      ? ` Renamed ${renameResult.renamed} scanbod${renameResult.renamed === 1 ? "y" : "ies"} by arch sequence.`
+      : "";
+    const ambiguityMessage = renameResult.ambiguous
+      ? ` ${renameResult.ambiguous} group${renameResult.ambiguous === 1 ? " was" : "s were"} too small for orientation-based SB1 detection.`
+      : "";
     showToast(
-      `Plane refinement completed: ${refinedCount} refined, ${partialCount} partially refined, ${unchangedCount} unchanged.`,
+      `Plane refinement completed: ${refinedCount} refined, ${partialCount} partially refined, ${unchangedCount} unchanged.${renameMessage}${ambiguityMessage}`,
     );
   } catch (error) {
     console.error("Plane refinement failed:", error);
@@ -1778,12 +2416,376 @@ function normalizedAssessmentScans(data) {
   }));
 }
 
+function assessmentScansForDataset(datasetId) {
+  const dataset = assessmentDataGroups.get(datasetId);
+  if (!dataset) return [];
+  return dataset.files.flatMap((fileRecord, fileIndex) => fileRecord.scans.map((scan, scanIndex) => ({
+    scan,
+    fileRecord,
+    fileIndex,
+    scanIndex,
+  })));
+}
+
+function clearAssessmentRegistrations() {
+  [...assessmentDataGroups.values()]
+    .filter((dataset) => dataset.type === "test")
+    .forEach((dataset) => assessmentScansForDataset(dataset.id).forEach(({ scan }) => {
+      delete scan.assessmentRegistrationMatrix;
+      delete scan.assessmentRegistration;
+    }));
+  if (!assessmentAlignmentWindow.hidden) renderAssessmentAlignmentReport();
+}
+
+function assessmentScanbodyPairs(sourceScan, targetScan) {
+  if (sourceScan.scanbodies.length === targetScan.scanbodies.length) {
+    return sourceScan.scanbodies.map((scanbody, index) => [scanbody, targetScan.scanbodies[index]]);
+  }
+  return [];
+}
+
+function assessmentScanbodyOrigin(scanbody) {
+  return new THREE.Vector3().setFromMatrixPosition(assessmentMatrixFromRows(scanbody.matrix_4x4_row_major));
+}
+
+function assessmentScanSurfacePoints(scan, registrationMatrix = new THREE.Matrix4(), maximumPerScanbody = 420) {
+  if (!assessmentLibrary) return [];
+  return scan.scanbodies.flatMap((scanbody) => {
+    const sourceMatrix = assessmentMatrixFromRows(scanbody.matrix_4x4_row_major);
+    const transform = registrationMatrix.clone().multiply(sourceMatrix);
+    return sampleGeometryPoints(assessmentLibrary.mesh.geometry, maximumPerScanbody)
+      .map((point) => point.applyMatrix4(transform));
+  });
+}
+
+function assessmentReferenceForRegistration(registration) {
+  const referenceScans = assessmentScansForDataset("reference");
+  return referenceScans.find(({ scan, fileRecord, scanIndex }) => (
+    fileRecord.id === registration.referenceFileId
+    && scanIndex === registration.referenceScanIndex
+  )) || referenceScans.find(({ scan, fileRecord }) => (
+    scan.name === registration.referenceScanName
+    && fileRecord.name === registration.referenceFileName
+  ));
+}
+
+function assessmentKabschLargestEigenvector(input) {
+  const matrix = input.map((row) => row.slice());
+  const eigenvectors = [
+    [1, 0, 0, 0],
+    [0, 1, 0, 0],
+    [0, 0, 1, 0],
+    [0, 0, 0, 1],
+  ];
+
+  for (let iteration = 0; iteration < 60; iteration += 1) {
+    let pivotRow = 0;
+    let pivotColumn = 1;
+    let maximum = 0;
+    for (let row = 0; row < 4; row += 1) {
+      for (let column = row + 1; column < 4; column += 1) {
+        const value = Math.abs(matrix[row][column]);
+        if (value > maximum) {
+          maximum = value;
+          pivotRow = row;
+          pivotColumn = column;
+        }
+      }
+    }
+    if (maximum < 1e-12) break;
+
+    const app = matrix[pivotRow][pivotRow];
+    const aqq = matrix[pivotColumn][pivotColumn];
+    const apq = matrix[pivotRow][pivotColumn];
+    const angle = 0.5 * Math.atan2(2 * apq, aqq - app);
+    const cosine = Math.cos(angle);
+    const sine = Math.sin(angle);
+
+    for (let index = 0; index < 4; index += 1) {
+      if (index === pivotRow || index === pivotColumn) continue;
+      const rowValue = matrix[index][pivotRow];
+      const columnValue = matrix[index][pivotColumn];
+      matrix[index][pivotRow] = rowValue * cosine - columnValue * sine;
+      matrix[pivotRow][index] = matrix[index][pivotRow];
+      matrix[index][pivotColumn] = rowValue * sine + columnValue * cosine;
+      matrix[pivotColumn][index] = matrix[index][pivotColumn];
+    }
+
+    matrix[pivotRow][pivotRow] = app * cosine * cosine - 2 * apq * cosine * sine + aqq * sine * sine;
+    matrix[pivotColumn][pivotColumn] = app * sine * sine + 2 * apq * cosine * sine + aqq * cosine * cosine;
+    matrix[pivotRow][pivotColumn] = 0;
+    matrix[pivotColumn][pivotRow] = 0;
+
+    for (let index = 0; index < 4; index += 1) {
+      const rowValue = eigenvectors[index][pivotRow];
+      const columnValue = eigenvectors[index][pivotColumn];
+      eigenvectors[index][pivotRow] = rowValue * cosine - columnValue * sine;
+      eigenvectors[index][pivotColumn] = rowValue * sine + columnValue * cosine;
+    }
+  }
+
+  let largestIndex = 0;
+  for (let index = 1; index < 4; index += 1) {
+    if (matrix[index][index] > matrix[largestIndex][largestIndex]) largestIndex = index;
+  }
+  return [
+    eigenvectors[0][largestIndex],
+    eigenvectors[1][largestIndex],
+    eigenvectors[2][largestIndex],
+    eigenvectors[3][largestIndex],
+  ];
+}
+
+function assessmentKabschRigidTransform(sourcePoints, targetPoints) {
+  // Kabsch-style least-squares rigid registration for paired 3D landmarks.
+  // This uses the quaternion/eigen form of the Kabsch solution so the result is
+  // one rotation + translation, with no scale or deformation.
+  const sourceCenter = pointCentroid(sourcePoints);
+  const targetCenter = pointCentroid(targetPoints);
+  const covariance = Array.from({ length: 3 }, () => [0, 0, 0]);
+
+  for (let index = 0; index < sourcePoints.length; index += 1) {
+    const source = sourcePoints[index].clone().sub(sourceCenter);
+    const target = targetPoints[index].clone().sub(targetCenter);
+    covariance[0][0] += source.x * target.x;
+    covariance[0][1] += source.x * target.y;
+    covariance[0][2] += source.x * target.z;
+    covariance[1][0] += source.y * target.x;
+    covariance[1][1] += source.y * target.y;
+    covariance[1][2] += source.y * target.z;
+    covariance[2][0] += source.z * target.x;
+    covariance[2][1] += source.z * target.y;
+    covariance[2][2] += source.z * target.z;
+  }
+
+  const [sxx, sxy, sxz] = covariance[0];
+  const [syx, syy, syz] = covariance[1];
+  const [szx, szy, szz] = covariance[2];
+  const eigenMatrix = [
+    [sxx + syy + szz, syz - szy, szx - sxz, sxy - syx],
+    [syz - szy, sxx - syy - szz, sxy + syx, szx + sxz],
+    [szx - sxz, sxy + syx, -sxx + syy - szz, syz + szy],
+    [sxy - syx, szx + sxz, syz + szy, -sxx - syy + szz],
+  ];
+  const eigenvector = assessmentKabschLargestEigenvector(eigenMatrix);
+  const rotation = new THREE.Quaternion(
+    eigenvector[1],
+    eigenvector[2],
+    eigenvector[3],
+    eigenvector[0],
+  ).normalize();
+  const translation = targetCenter.clone().sub(sourceCenter.clone().applyQuaternion(rotation));
+  return new THREE.Matrix4().compose(translation, rotation, new THREE.Vector3(1, 1, 1));
+}
+
+function assessmentInitialScanAlignment(sourceScan, targetScan) {
+  const pairs = assessmentScanbodyPairs(sourceScan, targetScan);
+  if (!pairs.length) {
+    throw new Error(`${sourceScan.name} has ${sourceScan.scanbodies.length} scanbodies, but ${targetScan.name} has ${targetScan.scanbodies.length}.`);
+  }
+
+  const sourcePoints = pairs.map(([scanbody]) => assessmentScanbodyOrigin(scanbody));
+  const targetPoints = pairs.map(([, scanbody]) => assessmentScanbodyOrigin(scanbody));
+  const matrix = assessmentKabschRigidTransform(sourcePoints, targetPoints);
+  const squaredError = sourcePoints.reduce((sum, point, index) => (
+    sum + point.clone().applyMatrix4(matrix).distanceToSquared(targetPoints[index])
+  ), 0);
+  const scanbodyDistances = assessmentScanbodyDistances(sourceScan, targetScan, matrix);
+  return {
+    matrix,
+    rms: Math.sqrt(squaredError / sourcePoints.length),
+    matchedScanbodies: pairs.length,
+    scanbodyDistances,
+  };
+}
+
+function assessmentScanbodyDistances(sourceScan, targetScan, registrationMatrix) {
+  const pairs = assessmentScanbodyPairs(sourceScan, targetScan);
+  return pairs.map(([sourceScanbody, targetScanbody], index) => {
+    const sourcePoint = assessmentScanbodyOrigin(sourceScanbody);
+    const targetPoint = assessmentScanbodyOrigin(targetScanbody);
+    const alignedSource = sourcePoint.applyMatrix4(registrationMatrix);
+    return {
+      index: index + 1,
+      sourceName: sourceScanbody.scanbody_name || `${sourceScan.name} SB${index + 1}`,
+      targetName: targetScanbody.scanbody_name || `${targetScan.name} SB${index + 1}`,
+      distance: alignedSource.distanceTo(targetPoint),
+    };
+  });
+}
+
+function refreshAssessmentAlignmentReportData() {
+  [...assessmentDataGroups.values()]
+    .filter((dataset) => dataset.type === "test")
+    .forEach((dataset) => assessmentScansForDataset(dataset.id).forEach(({ scan }) => {
+      if (!scan.assessmentRegistrationMatrix || !scan.assessmentRegistration) return;
+      const reference = assessmentReferenceForRegistration(scan.assessmentRegistration);
+      if (!reference) return;
+      scan.assessmentRegistration.scanbodyDistances = assessmentScanbodyDistances(
+        scan,
+        reference.scan,
+        scan.assessmentRegistrationMatrix,
+      );
+    }));
+  renderAssessmentAlignmentReport();
+  renderReportModule();
+}
+
+function runAssessmentInitialAlignment() {
+  const referenceScans = assessmentScansForDataset("reference");
+  const testDatasets = [...assessmentDataGroups.values()].filter((dataset) => dataset.type === "test");
+  const testScans = testDatasets.flatMap((dataset) => (
+    assessmentScansForDataset(dataset.id).map((item) => ({ ...item, dataset }))
+  ));
+  if (!referenceScans.length || !testScans.length) return;
+
+  loading.hidden = false;
+  loading.querySelector("p").textContent = "Running initial full-arch alignment…";
+  assessmentRegistrationStatus.className = "assessment-registration-status";
+
+  try {
+    const registrations = testScans.map(({ scan, dataset }) => {
+      const candidates = referenceScans.map((reference) => {
+        try {
+          return { reference, ...assessmentInitialScanAlignment(scan, reference.scan) };
+        } catch (_error) {
+          return null;
+        }
+      }).filter(Boolean);
+      if (!candidates.length) throw new Error(`${scan.name} has no compatible reference scan.`);
+      candidates.sort((first, second) => (
+        second.matchedScanbodies - first.matchedScanbodies || first.rms - second.rms
+      ));
+      const best = candidates[0];
+      return { scan, dataset, best };
+    });
+    registrations.forEach(({ scan, dataset, best }) => {
+      scan.assessmentRegistrationMatrix = best.matrix.clone();
+      scan.assessmentRegistration = {
+        referenceScanName: best.reference.scan.name,
+        referenceFileName: best.reference.fileRecord.name,
+        referenceFileId: best.reference.fileRecord.id,
+        referenceScanIndex: best.reference.scanIndex,
+        rms: best.rms,
+        matchedScanbodies: best.matchedScanbodies,
+        datasetName: dataset.name,
+        method: "initial-origin-kabsch",
+        scanbodyDistances: best.scanbodyDistances,
+      };
+    });
+    rebuildAssessmentScene({ refitView: false });
+    refreshAssessmentAlignmentReportData();
+    assessmentRegistrationStatus.textContent =
+      `${registrations.length} test scan${registrations.length === 1 ? "" : "s"} initially aligned`;
+    assessmentRegistrationStatus.classList.add("complete");
+    showToast(`Initially aligned ${registrations.length} full-arch test scan${registrations.length === 1 ? "" : "s"} to the reference group.`);
+  } catch (error) {
+    assessmentRegistrationStatus.textContent = error.message;
+    assessmentRegistrationStatus.classList.add("error");
+    showToast(`Initial alignment failed: ${error.message}`, "error");
+  } finally {
+    loading.hidden = true;
+    loading.querySelector("p").textContent = "Processing geometry…";
+  }
+}
+
+function applyAssessmentDeviationMap(entry, targetPoints) {
+  entry.mesh.updateMatrixWorld(true);
+  const targetTree = buildKdTree(targetPoints);
+  const position = entry.mesh.geometry.getAttribute("position");
+  const distances = [];
+  for (let index = 0; index < position.count; index += 1) {
+    const point = new THREE.Vector3(position.getX(index), position.getY(index), position.getZ(index))
+      .applyMatrix4(entry.mesh.matrixWorld);
+    distances.push(Math.sqrt(nearestPoint(targetTree, targetPoints, point).distanceSquared));
+  }
+  entry.deviationDistances = new Float32Array(distances);
+  colorizeDeviationEntry(entry, deviationScaleMaximum);
+}
+
+function applyAssessmentRefinedDeviationMaps() {
+  const testDatasets = [...assessmentDataGroups.values()].filter((dataset) => dataset.type === "test");
+  testDatasets.forEach((dataset) => {
+    assessmentScansForDataset(dataset.id).forEach(({ scan, fileIndex, scanIndex }) => {
+      const registration = scan.assessmentRegistration;
+      if (!registration?.refined) return;
+      const reference = assessmentReferenceForRegistration(registration);
+      if (!reference) return;
+      const targetPoints = assessmentScanSurfacePoints(reference.scan, new THREE.Matrix4(), 700);
+      const groupId = `${dataset.id}-file-${fileIndex + 1}-scan-${scanIndex + 1}`;
+      const group = assessmentScanGroups.get(groupId);
+      group?.childIds.forEach((id) => {
+        const entry = assessmentModels.get(id);
+        if (entry) applyAssessmentDeviationMap(entry, targetPoints);
+      });
+    });
+  });
+}
+
+function runAssessmentRefinedAlignment() {
+  const testDatasets = [...assessmentDataGroups.values()].filter((dataset) => dataset.type === "test");
+  const testScans = testDatasets.flatMap((dataset) => (
+    assessmentScansForDataset(dataset.id).map((item) => ({ ...item, dataset }))
+  ));
+  const alignedScans = testScans.filter(({ scan }) => scan.assessmentRegistrationMatrix && scan.assessmentRegistration);
+  if (!alignedScans.length) return;
+
+  loading.hidden = false;
+  loading.querySelector("p").textContent = "Running refined surface ICP alignment...";
+  assessmentRegistrationStatus.className = "assessment-registration-status";
+
+  try {
+    const refinements = alignedScans.map(({ scan }) => {
+      const reference = assessmentReferenceForRegistration(scan.assessmentRegistration);
+      if (!reference) throw new Error(`${scan.name} has no matched reference scan for refined alignment.`);
+      const initialMatrix = scan.assessmentRegistrationMatrix || new THREE.Matrix4();
+      const sourcePoints = assessmentScanSurfacePoints(scan, initialMatrix, 520);
+      const targetPoints = assessmentScanSurfacePoints(reference.scan, new THREE.Matrix4(), 700);
+      if (!sourcePoints.length || !targetPoints.length) throw new Error(`${scan.name} does not have enough surface points for ICP.`);
+      const result = refineRegistration(sourcePoints, targetPoints, new THREE.Matrix4());
+      return { scan, result, reference };
+    });
+
+    refinements.forEach(({ scan, result, reference }) => {
+      scan.assessmentRegistrationMatrix = result.matrix.clone().multiply(scan.assessmentRegistrationMatrix || new THREE.Matrix4());
+      scan.assessmentRegistration = {
+        ...scan.assessmentRegistration,
+        referenceScanName: reference.scan.name,
+        referenceFileName: reference.fileRecord.name,
+        referenceFileId: reference.fileRecord.id,
+        referenceScanIndex: reference.scanIndex,
+        refined: {
+          method: "surface-icp",
+          rms: result.error,
+        },
+      };
+    });
+
+    rebuildAssessmentScene({ refitView: false });
+    refreshAssessmentAlignmentReportData();
+    applyAssessmentRefinedDeviationMaps();
+    deviationLegend.hidden = false;
+    assessmentRegistrationStatus.textContent =
+      `${refinements.length} test scan${refinements.length === 1 ? "" : "s"} refined with surface ICP`;
+    assessmentRegistrationStatus.classList.add("complete");
+    showToast(`Refined ${refinements.length} full-arch test scan${refinements.length === 1 ? "" : "s"} with surface ICP.`);
+  } catch (error) {
+    assessmentRegistrationStatus.textContent = error.message;
+    assessmentRegistrationStatus.classList.add("error");
+    showToast(`Refined alignment failed: ${error.message}`, "error");
+  } finally {
+    loading.hidden = true;
+    loading.querySelector("p").textContent = "Processing geometry...";
+  }
+}
+
 function initializeAssessmentDataGroups() {
   assessmentDataGroups.clear();
   assessmentDataGroups.set("reference", {
     id: "reference",
     type: "reference",
     name: "Reference group",
+    color: "#55cfff",
     files: [],
     collapsed: false,
   });
@@ -1791,6 +2793,7 @@ function initializeAssessmentDataGroups() {
     id: "test-group-1",
     type: "test",
     name: "Group 1",
+    color: ASSESSMENT_GROUP_COLORS[0],
     files: [],
     collapsed: false,
   });
@@ -1803,6 +2806,7 @@ function createAssessmentTestGroup() {
     id: `test-group-${number}`,
     type: "test",
     name: `Group ${number}`,
+    color: ASSESSMENT_GROUP_COLORS[(number - 1) % ASSESSMENT_GROUP_COLORS.length],
     files: [],
     collapsed: false,
   };
@@ -1819,6 +2823,30 @@ function assessmentHasTransformationFiles() {
 function assessmentFileSummary(fileRecord) {
   const bodyCount = fileRecord.scans.reduce((sum, scan) => sum + scan.scanbodies.length, 0);
   return `${fileRecord.scans.length} scans · ${bodyCount} scanbodies`;
+}
+
+function setAssessmentDataGroupColor(groupId, colorValue) {
+  const dataset = assessmentDataGroups.get(groupId);
+  if (!dataset || !/^#[0-9a-f]{6}$/i.test(colorValue)) return;
+  dataset.color = colorValue.toLowerCase();
+  const color = new THREE.Color(dataset.color);
+  [...assessmentScanGroups.values()]
+    .filter((group) => group.datasetGroupId === groupId)
+    .forEach((group) => {
+      group.color = color.clone();
+      group.childIds.forEach((id) => {
+        const entry = assessmentModels.get(id);
+        if (!entry) return;
+        entry.color = color.clone();
+        entry.mesh.material.color.copy(color);
+        entry.mesh.material.needsUpdate = true;
+        if (entry.originSphere) {
+          entry.originSphere.material.color.copy(color);
+          entry.originSphere.material.needsUpdate = true;
+        }
+      });
+    });
+  renderAssessmentObjects();
 }
 
 function renderAssessmentFileList(group) {
@@ -1864,6 +2892,11 @@ function bindAssessmentDataGroupControls(root) {
       renderAssessmentObjects();
     });
   });
+  root.querySelectorAll("[data-assessment-group-color]").forEach((input) => {
+    input.addEventListener("input", () => {
+      setAssessmentDataGroupColor(input.dataset.assessmentGroupColor, input.value);
+    });
+  });
   root.querySelectorAll("[data-remove-test-group]").forEach((button) => {
     button.addEventListener("click", () => {
       assessmentDataGroups.delete(button.dataset.removeTestGroup);
@@ -1875,6 +2908,7 @@ function bindAssessmentDataGroupControls(root) {
     button.addEventListener("click", () => {
       const group = assessmentDataGroups.get(button.dataset.groupId);
       if (!group) return;
+      if (group.type === "reference") clearAssessmentRegistrations();
       group.files = group.files.filter((fileRecord) => fileRecord.id !== button.dataset.removeAssessmentFile);
       rebuildAssessmentScene();
       renderAssessmentDataGroups();
@@ -1884,6 +2918,7 @@ function bindAssessmentDataGroupControls(root) {
 
 function renderAssessmentDataGroups() {
   const reference = assessmentDataGroups.get("reference");
+  referenceGroupColor.value = reference.color;
   referenceFileList.innerHTML = renderAssessmentFileList(reference);
   document.querySelector("#reference-file-count").textContent =
     `${reference.files.length} FILE${reference.files.length === 1 ? "" : "S"}`;
@@ -1897,7 +2932,13 @@ function renderAssessmentDataGroups() {
           <span class="assessment-group-kind">TEST GROUP</span>
           <input type="text" value="${escapeHTML(group.name)}" data-test-group-name="${group.id}" aria-label="Test group name" />
         </div>
-        <button class="remove-test-group" type="button" data-remove-test-group="${group.id}" aria-label="Remove ${escapeHTML(group.name)}">×</button>
+        <div class="assessment-group-header-actions">
+          <label class="assessment-color-control" title="${escapeHTML(group.name)} color">
+            <span>COLOR</span>
+            <input type="color" value="${group.color}" data-assessment-group-color="${group.id}" aria-label="${escapeHTML(group.name)} color" />
+          </label>
+          <button class="remove-test-group" type="button" data-remove-test-group="${group.id}" aria-label="Remove ${escapeHTML(group.name)}">×</button>
+        </div>
       </div>
       <input data-assessment-file-input="${group.id}" type="file" accept=".json,application/json" multiple hidden />
       <button class="assessment-group-add" data-add-assessment-files="${group.id}" type="button">
@@ -1912,6 +2953,7 @@ function renderAssessmentDataGroups() {
 
 function disposeAssessmentEntry(entry) {
   assessmentGroup.remove(entry.mesh);
+  disposeLocalOriginAxes(entry);
   entry.mesh.geometry.dispose();
   entry.mesh.material.dispose();
 }
@@ -2005,6 +3047,13 @@ function renderAssessmentObjects() {
       <span class="object-copy"><span class="object-name">${escapeHTML(libraryEntry.name)}</span><span class="object-type">ASSESSMENT LIBRARY · ORIGIN</span></span>
       <label class="visibility-switch"><input type="checkbox" data-assessment-object="${libraryEntry.id}" ${libraryEntry.userVisible ? "checked" : ""}/><span></span></label>
     </div>` : "";
+  const assessmentGroupStatus = (group) => {
+    if (!group.registration) return "RECONSTRUCTED";
+    if (group.registration.refined) {
+      return `REFINED TO ${escapeHTML(group.registration.referenceScanName)} · ICP RMS ${formatMicrometers(group.registration.refined.rms)}`;
+    }
+    return `INITIALLY ALIGNED TO ${escapeHTML(group.registration.referenceScanName)} · RMS ${formatMicrometers(group.registration.rms)}`;
+  };
   const scanGroupHtml = (group) => {
     const children = group.childIds.map((id) => assessmentModels.get(id)).filter(Boolean);
     const visibleCount = children.filter((entry) => entry.userVisible).length;
@@ -2021,7 +3070,7 @@ function renderAssessmentObjects() {
             <svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></svg>
           </button>
           <span class="object-swatch" style="color:#${group.color.getHexString()};background:#${group.color.getHexString()}"></span>
-          <span class="object-copy"><span class="object-name">${escapeHTML(group.name)}</span><span class="object-type">${children.length} SCANBODIES · RECONSTRUCTED</span></span>
+          <span class="object-copy"><span class="object-name">${escapeHTML(group.name)}</span><span class="object-type">${children.length} SCANBODIES · ${assessmentGroupStatus(group)}</span></span>
           <label class="visibility-switch"><input type="checkbox" data-assessment-group="${group.id}" ${visibleCount === children.length && children.length ? "checked" : ""}/><span></span></label>
         </div>
         <div class="object-group-children">${childrenHtml}</div>
@@ -2039,7 +3088,7 @@ function renderAssessmentObjects() {
           <button class="group-toggle" type="button" data-assessment-dataset-toggle="${dataset.id}" aria-expanded="${!dataset.collapsed}">
             <svg viewBox="0 0 24 24"><path d="m7 9 5 5 5-5"/></svg>
           </button>
-          <span class="dataset-badge ${dataset.type}">${dataset.type === "reference" ? "R" : "T"}</span>
+          <span class="dataset-badge ${dataset.type}" style="color:${dataset.color};border-color:${dataset.color}">${dataset.type === "reference" ? "R" : "T"}</span>
           <span class="object-copy"><span class="object-name">${escapeHTML(dataset.name)}</span><span class="object-type">${typeLabel} · ${dataset.files.length} JSON · ${scanGroups.length} SCANS</span></span>
           <label class="visibility-switch"><input type="checkbox" data-assessment-dataset="${dataset.id}" ${visibleCount === datasetEntries.length && datasetEntries.length ? "checked" : ""}/><span></span></label>
         </div>
@@ -2081,7 +3130,7 @@ function renderAssessmentObjects() {
   });
 }
 
-function rebuildAssessmentScene() {
+function rebuildAssessmentScene({ refitView = true } = {}) {
   [...assessmentModels.values()]
     .filter((entry) => entry.type === "assessment-scanbody")
     .forEach((entry) => {
@@ -2095,15 +3144,10 @@ function rebuildAssessmentScene() {
     return;
   }
 
-  const palette = [0x56d8ff, 0xffb35c, 0x70e39f, 0xff72a8, 0xb897ff, 0xffe066, 0x56a8ff];
-  let colorIndex = 0;
   [...assessmentDataGroups.values()].forEach((dataset) => {
     dataset.files.forEach((fileRecord, fileIndex) => {
       fileRecord.scans.forEach((scan, scanIndex) => {
-        const color = new THREE.Color(dataset.type === "reference"
-          ? [0x55cfff, 0x729bff, 0x65e0cf][colorIndex % 3]
-          : palette[colorIndex % palette.length]);
-        colorIndex += 1;
+        const color = new THREE.Color(dataset.color);
         const groupId = `${dataset.id}-file-${fileIndex + 1}-scan-${scanIndex + 1}`;
         const group = {
           id: groupId,
@@ -2113,15 +3157,18 @@ function rebuildAssessmentScene() {
           color,
           childIds: [],
           collapsed: false,
+          registration: scan.assessmentRegistration || null,
         };
         assessmentScanGroups.set(group.id, group);
         scan.scanbodies.forEach((scanbody, bodyIndex) => {
-          const matrix = assessmentMatrixFromRows(scanbody.matrix_4x4_row_major);
+          const sourceMatrix = assessmentMatrixFromRows(scanbody.matrix_4x4_row_major);
+          const registrationMatrix = scan.assessmentRegistrationMatrix || new THREE.Matrix4();
+          const matrix = registrationMatrix.clone().multiply(sourceMatrix);
           const geometry = assessmentLibrary.mesh.geometry.clone();
           const mesh = createAssessmentMesh(geometry, color);
           mesh.applyMatrix4(matrix);
           const id = `${group.id}-body-${bodyIndex + 1}`;
-          assessmentModels.set(id, {
+          const entry = {
             id,
             name: scanbody.scanbody_name || `${scan.name} SB${bodyIndex + 1}`,
             type: "assessment-scanbody",
@@ -2130,10 +3177,14 @@ function rebuildAssessmentScene() {
             color,
             mesh,
             matrix,
+            sourceMatrix,
+            scanRegistrationMatrix: scan.assessmentRegistrationMatrix?.clone() || null,
             userVisible: true,
             triangles: geometry.getAttribute("position").count / 3,
             size: geometry.boundingBox.getSize(new THREE.Vector3()),
-          });
+          };
+          addLocalOriginAxes(entry);
+          assessmentModels.set(id, entry);
           group.childIds.push(id);
         });
       });
@@ -2141,7 +3192,7 @@ function rebuildAssessmentScene() {
   });
   renderAssessmentObjects();
   updateAssessmentUI();
-  fitView();
+  if (refitView) fitView();
 }
 
 async function importAssessmentLibrary(file) {
@@ -2169,6 +3220,7 @@ async function importAssessmentLibrary(file) {
       triangles: geometry.getAttribute("position").count / 3,
       size: geometry.boundingBox.getSize(new THREE.Vector3()),
     };
+    addLocalOriginAxes(assessmentLibrary);
     assessmentModels.set(assessmentLibrary.id, assessmentLibrary);
     assessmentLibraryStatus.textContent = file.name;
     assessmentLibraryStatus.classList.add("loaded");
@@ -2185,6 +3237,7 @@ async function importAssessmentLibrary(file) {
 async function importAssessmentJsonFiles(groupId, fileList) {
   const group = assessmentDataGroups.get(groupId);
   if (!group || !fileList?.length) return;
+  if (group.type === "reference") clearAssessmentRegistrations();
   for (const file of [...fileList]) {
     if (!file.name.toLowerCase().endsWith(".json")) {
       showToast(`${file.name} is not a JSON file.`, "error");
@@ -2221,6 +3274,41 @@ function updateAssessmentUI() {
     [...assessmentDataGroups.values()].filter((group) => group.type === "test").length;
   document.querySelector("#assessment-scan-count").textContent = assessmentScanGroups.size;
   document.querySelector("#assessment-body-count").textContent = scanbodyEntries.length;
+  const referenceScanCount = assessmentScansForDataset("reference").length;
+  const testScanCount = [...assessmentDataGroups.values()]
+    .filter((dataset) => dataset.type === "test")
+    .reduce((sum, dataset) => sum + assessmentScansForDataset(dataset.id).length, 0);
+  const registeredTestScanCount = [...assessmentDataGroups.values()]
+    .filter((dataset) => dataset.type === "test")
+    .reduce((sum, dataset) => (
+      sum + assessmentScansForDataset(dataset.id)
+        .filter(({ scan }) => scan.assessmentRegistrationMatrix).length
+  ), 0);
+  const refinedTestScanCount = [...assessmentDataGroups.values()]
+    .filter((dataset) => dataset.type === "test")
+    .reduce((sum, dataset) => (
+      sum + assessmentScansForDataset(dataset.id)
+        .filter(({ scan }) => scan.assessmentRegistration?.refined).length
+  ), 0);
+  initialAssessmentAlignmentButton.disabled = !assessmentLibrary || !referenceScanCount || !testScanCount;
+  refinedAssessmentAlignmentButton.disabled = registeredTestScanCount !== testScanCount || !testScanCount;
+  assessmentAlignmentReportButton.disabled = !registeredTestScanCount;
+  if (!referenceScanCount || !testScanCount) {
+    assessmentRegistrationStatus.textContent = "Add a reference scan and at least one test scan";
+    assessmentRegistrationStatus.className = "assessment-registration-status";
+  } else if (refinedTestScanCount === testScanCount) {
+    assessmentRegistrationStatus.textContent =
+      `${refinedTestScanCount} test scan${refinedTestScanCount === 1 ? "" : "s"} refined with surface ICP`;
+    assessmentRegistrationStatus.className = "assessment-registration-status complete";
+  } else if (registeredTestScanCount === testScanCount) {
+    assessmentRegistrationStatus.textContent =
+      `${registeredTestScanCount} test scan${registeredTestScanCount === 1 ? "" : "s"} initially aligned; ready for refined alignment`;
+    assessmentRegistrationStatus.className = "assessment-registration-status complete";
+  } else {
+    assessmentRegistrationStatus.textContent =
+      `Ready to initially align ${testScanCount} test scan${testScanCount === 1 ? "" : "s"}; refined alignment is not implemented yet`;
+    assessmentRegistrationStatus.className = "assessment-registration-status";
+  }
   clearAssessmentButton.disabled = !assessmentLibrary && !assessmentHasTransformationFiles();
   document.querySelector("#model-count").textContent = `${entries.length} MODEL${entries.length === 1 ? "" : "S"}`;
   document.querySelector("#file-count").textContent = `${assessmentScanGroups.size} / ${scanbodyEntries.length}`;
@@ -2243,40 +3331,47 @@ function updateAssessmentUI() {
     ? Math.max(assessmentLibrary.size.x, assessmentLibrary.size.y, assessmentLibrary.size.z, 10)
     : 10;
   grid.scale.setScalar((referenceSize * 3) / 200);
-  axes.scale.setScalar((referenceSize / 50) * 20);
-  axes.visible = Boolean(assessmentLibrary);
-  originMarker.visible = Boolean(assessmentLibrary);
 }
 
 function switchModule(moduleName) {
   activeModule = moduleName;
+  hideObjectHoverLabel();
   document.querySelectorAll(".module-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.module === moduleName);
   });
   document.querySelector("#data-processing-sidebar").hidden = moduleName !== "data-processing";
   document.querySelector("#accuracy-assessment-sidebar").hidden = moduleName !== "accuracy-assessment";
+  document.querySelector("#report-sidebar").hidden = moduleName !== "report";
   dataObjectsList.hidden = moduleName !== "data-processing";
   assessmentObjectsList.hidden = moduleName !== "accuracy-assessment";
   document.querySelectorAll(".data-processing-control").forEach((control) => {
     control.hidden = moduleName !== "data-processing";
   });
+  document.querySelector(".assessment-toolbar-action").hidden = moduleName !== "accuracy-assessment";
+  viewportToolbar.hidden = moduleName === "report";
+  viewer.hidden = moduleName === "report";
+  reportPanel.hidden = moduleName !== "report";
+  viewportPanel.classList.toggle("report-mode", moduleName === "report");
+  statsBar.hidden = moduleName === "report";
   deviationLegend.hidden = true;
   modelsGroup.visible = moduleName === "data-processing";
   assessmentGroup.visible = moduleName === "accuracy-assessment";
   document.querySelector("#file-count-label").textContent = moduleName === "data-processing"
     ? "LIBRARY / FULL-ARCH"
-    : "SCANS / SCANBODIES";
+    : moduleName === "accuracy-assessment" ? "SCANS / SCANBODIES" : "REPORT";
   [...models.values()].forEach((entry) => {
     if (moduleName === "data-processing") entry.mesh.visible = entry.userVisible ?? entry.mesh.visible;
   });
   if (moduleName === "data-processing") {
     updateUI();
     updateSceneReference();
-  } else {
+  } else if (moduleName === "accuracy-assessment") {
     renderAssessmentObjects();
     updateAssessmentUI();
+  } else {
+    renderReportModule();
   }
-  fitView();
+  if (moduleName !== "report") fitView();
 }
 
 function wireDropZone(zone, input, type) {
@@ -2300,12 +3395,17 @@ document.querySelectorAll(".module-tab").forEach((button) => {
 });
 assessmentLibraryZone.addEventListener("click", () => assessmentLibraryInput.click());
 referenceJsonZone.addEventListener("click", () => referenceJsonInput.click());
+referenceGroupColor.addEventListener("input", () => {
+  setAssessmentDataGroupColor("reference", referenceGroupColor.value);
+});
 assessmentLibraryInput.addEventListener("change", () => importAssessmentLibrary(assessmentLibraryInput.files[0]));
 referenceJsonInput.addEventListener("change", async () => {
   await importAssessmentJsonFiles("reference", referenceJsonInput.files);
   referenceJsonInput.value = "";
 });
 addTestGroupButton.addEventListener("click", createAssessmentTestGroup);
+initialAssessmentAlignmentButton.addEventListener("click", runAssessmentInitialAlignment);
+refinedAssessmentAlignmentButton.addEventListener("click", runAssessmentRefinedAlignment);
 [
   [assessmentLibraryZone, assessmentLibraryInput, importAssessmentLibrary],
 ].forEach(([zone, input, handler]) => {
@@ -2356,6 +3456,9 @@ wireframeToggle.addEventListener("change", () => {
   models.forEach((entry) => { entry.mesh.material.wireframe = wireframeToggle.checked; });
   assessmentModels.forEach((entry) => { entry.mesh.material.wireframe = wireframeToggle.checked; });
 });
+canvas.addEventListener("pointermove", updateObjectHoverLabel);
+canvas.addEventListener("pointerleave", hideObjectHoverLabel);
+canvas.addEventListener("pointerdown", hideObjectHoverLabel);
 gridToggle.addEventListener("change", () => { grid.visible = gridToggle.checked; });
 isolateScanbodiesButton.addEventListener("click", isolateScanbodies);
 registerScanbodiesButton.addEventListener("click", registerIsolatedScanbodies);
@@ -2368,6 +3471,11 @@ document.querySelector("#export-registration-matrices").addEventListener("click"
 document.querySelector("#close-registration-matrices").addEventListener("click", closeRegistrationMatrices);
 registrationMatrixWindow.addEventListener("click", (event) => {
   if (event.target === registrationMatrixWindow) closeRegistrationMatrices();
+});
+assessmentAlignmentReportButton.addEventListener("click", openAssessmentAlignmentReport);
+document.querySelector("#close-assessment-alignment-report").addEventListener("click", closeAssessmentAlignmentReport);
+assessmentAlignmentWindow.addEventListener("click", (event) => {
+  if (event.target === assessmentAlignmentWindow) closeAssessmentAlignmentReport();
 });
 document.querySelector("#objects-collapse").addEventListener("click", (event) => {
   const collapsed = objectsPanel.classList.toggle("collapsed");

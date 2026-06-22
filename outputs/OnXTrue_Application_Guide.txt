@@ -1,9 +1,9 @@
-FORMSPACE STL VIEWER
+ONXTRUE STL VIEWER
 Concise Application Guide
 
 1. OVERVIEW
 
-FormSpace is a web-based STL viewer for dental scanbody workflows. It uses a
+OnXTrue is a web-based STL viewer for dental scanbody workflows. It uses a
 Python Flask backend and a Three.js 3D frontend.
 
 The application supports two STL categories:
@@ -46,7 +46,7 @@ Keep the Terminal window open while using the application.
 - Z is the vertical axis.
 - X and Y form the horizontal plane.
 - The grid is displayed on the XY plane at Z = 0.
-- FormSpace does not automatically align or register models.
+- OnXTrue does not automatically align or register models.
 
 
 5. SCANBODY ISOLATION

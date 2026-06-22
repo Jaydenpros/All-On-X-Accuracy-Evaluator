@@ -11,8 +11,8 @@ from docx.shared import Inches, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "outputs" / "FormSpace_STL_Viewer_Application_Guide.docx"
-SCREENSHOT = Path(os.environ["FORMSPACE_GUIDE_SCREENSHOT"]) if os.environ.get("FORMSPACE_GUIDE_SCREENSHOT") else None
+OUTPUT = ROOT / "outputs" / "OnXTrue_STL_Viewer_Application_Guide.docx"
+SCREENSHOT = Path(os.environ["ONXTRUE_GUIDE_SCREENSHOT"]) if os.environ.get("ONXTRUE_GUIDE_SCREENSHOT") else None
 
 BLUE = "2E74B5"
 DARK_BLUE = "1F4D78"
@@ -248,7 +248,7 @@ def build():
     section = doc.sections[0]
     header = section.header
     hp = header.paragraphs[0]
-    hp.text = "FORMSPACE  |  TECHNICAL APPLICATION GUIDE"
+    hp.text = "ONXTRUE  |  TECHNICAL APPLICATION GUIDE"
     hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     for run in hp.runs:
         set_font(run, size=8, bold=True, color=MID_GRAY)
@@ -263,7 +263,7 @@ def build():
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title.paragraph_format.space_after = Pt(8)
-    set_font(title.add_run("FormSpace STL Viewer"), size=30, bold=True, color=NAVY)
+    set_font(title.add_run("OnXTrue STL Viewer"), size=30, bold=True, color=NAVY)
     subtitle = doc.add_paragraph()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
     subtitle.paragraph_format.space_after = Pt(26)
@@ -289,7 +289,7 @@ def build():
     doc.add_page_break()
 
     add_heading(doc, "1. Application overview", 1)
-    add_body(doc, "FormSpace is a browser-based STL visualization application with a Python Flask backend. It is designed for dental scan workflows that compare one Scan Body Library model with one or more scan files in a shared native coordinate system.")
+    add_body(doc, "OnXTrue is a browser-based STL visualization application with a Python Flask backend. It is designed for dental scan workflows that compare one Scan Body Library model with one or more scan files in a shared native coordinate system.")
     add_callout(
         doc,
         "CORE WORKFLOW",
@@ -318,7 +318,7 @@ def build():
         caption = doc.add_paragraph()
         caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
         caption.paragraph_format.space_after = Pt(8)
-        set_font(caption.add_run("Figure 1. FormSpace scene with the blue library model, green combined scan, Z-up axes, and 3D Objects panel."), size=9, italic=True, color=MID_GRAY)
+        set_font(caption.add_run("Figure 1. OnXTrue scene with the blue library model, green combined scan, Z-up axes, and 3D Objects panel."), size=9, italic=True, color=MID_GRAY)
 
     add_key_value_table(doc, [
         ("Scan Body Library", "Accepts one STL. The model is blue and defines the coordinate origin."),
@@ -363,7 +363,7 @@ def build():
     add_callout(
         doc,
         "IMPORTANT",
-        "Correct spatial comparison depends on the library and scan STL files sharing the same coordinate frame before upload. FormSpace preserves coordinates; it does not perform automatic registration.",
+        "Correct spatial comparison depends on the library and scan STL files sharing the same coordinate frame before upload. OnXTrue preserves coordinates; it does not perform automatic registration.",
         "FFF3D6",
         "8A6500",
     )
@@ -441,7 +441,7 @@ def build():
         "Uploaded files persist in the local uploads directory until manually cleaned.",
         "Scanbody isolation is geometry-based; the 5 mm threshold is fixed in the current interface.",
         "The isolation proximity test uses mesh vertices, not exact triangle-to-triangle surface distance.",
-        "FormSpace does not automatically align, register, or transform scans against the library.",
+        "OnXTrue does not automatically align, register, or transform scans against the library.",
         "Model state is browser-session based and is not restored after a page reload.",
     ]:
         add_bullet(doc, item)
@@ -451,7 +451,7 @@ def build():
         ("Address already in use", "Another process is using the port. Stop that server with Ctrl+C or use another port."),
         ("Codex cannot reach port 5000", "Use the Codex-managed preview on port 5001 while Chrome continues on port 5000."),
         ("STL cannot be rendered", "Confirm it is a valid ASCII or binary STL. The custom binary parser supports 3Shape-style headers."),
-        ("Objects appear misaligned", "Verify the files were exported in the same coordinate frame; FormSpace does not register models."),
+        ("Objects appear misaligned", "Verify the files were exported in the same coordinate frame; OnXTrue does not register models."),
         ("Isolation button disabled", "Load at least one non-isolated scan STL."),
         ("Old interface remains visible", "Reload the page; versioned JavaScript and CSS URLs are used to avoid stale browser caching."),
     ])
@@ -478,9 +478,9 @@ def build():
         ("uploads/", "Runtime storage for uploaded STL files."),
     ])
 
-    doc.core_properties.title = "FormSpace STL Viewer Application Guide"
+    doc.core_properties.title = "OnXTrue STL Viewer Application Guide"
     doc.core_properties.subject = "Technical and operating documentation"
-    doc.core_properties.author = "FormSpace Project"
+    doc.core_properties.author = "OnXTrue Project"
     doc.core_properties.keywords = "STL, Three.js, Flask, scanbody, dental scans, 3D viewer"
     doc.save(OUTPUT)
     print(OUTPUT)

@@ -9,6 +9,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-macos/
 venv/
 env/
 ENV/
@@ -32,6 +33,11 @@ uploads/*
 
 # Generated document previews
 work/rendered_guide/
+
+# Desktop packaging
+build/
+dist/
+*.spec
 
 # Editors and IDEs
 .idea/

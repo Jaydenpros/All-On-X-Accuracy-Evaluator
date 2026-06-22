@@ -4,16 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Load and inspect multiple STL models in an interactive 3D workspace." />
-    <title>FormSpace — STL Viewer</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='25') }}" />
+    <title>OnXTrue — STL Viewer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='35') }}" />
     <script type="importmap">
       {
         "imports": {
-          "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
-          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+          "three": "{{ url_for('static', filename='vendor/three/three.module.js') }}",
+          "three/addons/": "{{ url_for('static', filename='vendor/three/addons/') }}"
         }
       }
     </script>
@@ -21,11 +18,11 @@
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="/" aria-label="FormSpace home">
+        <a class="brand" href="/" aria-label="OnXTrue home">
           <span class="brand-mark">
             <span></span><span></span><span></span>
           </span>
-          <span>FormSpace</span>
+          <span>OnXTrue</span>
         </a>
         <nav class="module-switcher" aria-label="Application modules">
           <button class="module-tab active" data-module="data-processing" type="button">
@@ -33,6 +30,9 @@
           </button>
           <button class="module-tab" data-module="accuracy-assessment" type="button">
             <span>02</span> Accuracy Assessment
+          </button>
+          <button class="module-tab" data-module="report" type="button">
+            <span>03</span> Report
           </button>
         </nav>
         <div class="topbar-meta">
@@ -148,7 +148,13 @@
                       <span class="assessment-group-kind">REFERENCE</span>
                       <strong>Reference group</strong>
                     </div>
-                    <span id="reference-file-count" class="assessment-group-count">0 FILES</span>
+                    <div class="assessment-group-header-actions">
+                      <label class="assessment-color-control" title="Reference group color">
+                        <span>COLOR</span>
+                        <input id="reference-group-color" type="color" value="#55cfff" data-assessment-group-color="reference" aria-label="Reference group color" />
+                      </label>
+                      <span id="reference-file-count" class="assessment-group-count">0 FILES</span>
+                    </div>
                   </div>
                   <input id="reference-json-input" type="file" accept=".json,application/json" multiple hidden />
                   <button id="reference-json-zone" class="assessment-group-add" type="button">
@@ -179,6 +185,22 @@
             </section>
           </div>
 
+          <div id="report-sidebar" class="module-sidebar" hidden>
+            <section class="intro">
+              <p class="eyebrow report-accent">REPORT</p>
+              <h1>Compare deviation.<br /><em>Summarize results.</em></h1>
+              <p class="intro-copy">Review descriptive statistics and box plots for scanbody alignment distances, grouped by test group.</p>
+            </section>
+            <section class="upload-section report-stage">
+              <div class="upload-heading">
+                <div><span class="upload-step">03</span><h2>Deviation report</h2></div>
+                <span class="upload-limit">REFINED ICP</span>
+              </div>
+              <div id="report-sidebar-summary" class="report-sidebar-summary">
+                Run alignment to generate report statistics.
+              </div>
+            </section>
+          </div>
           <footer class="sidebar-footer">
             <span>STL · ASCII / BINARY</span>
             <span>MAX 500 MB</span>
@@ -186,7 +208,7 @@
         </aside>
 
         <section class="viewport-panel">
-          <div class="viewport-toolbar">
+          <div id="viewport-toolbar" class="viewport-toolbar">
             <div class="tool-group">
               <button id="fit-view" class="tool-button" type="button" title="Fit all models">
                 <svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
@@ -199,6 +221,23 @@
                 <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4M5 5l2.5 2.5M16.5 16.5 19 19M19 5l-2.5 2.5M7.5 16.5 5 19"/></svg>
                 Center Library
               </button>
+              <div class="assessment-toolbar-action" hidden>
+                <div class="assessment-alignment-buttons">
+                  <button id="initial-assessment-alignment" class="tool-button assessment-register" type="button" disabled title="Initial rigid alignment using SB-number matched scanbody origins">
+                    <svg viewBox="0 0 24 24"><path d="M7 7h10v10H7zM3 12h4m10 0h4M12 3v4m0 10v4"/><circle cx="12" cy="12" r="2"/></svg>
+                    1 Initial Alignment
+                  </button>
+                  <button id="refined-assessment-alignment" class="tool-button assessment-register" type="button" disabled title="Refine initially aligned test scans using rigid surface ICP">
+                    <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/><circle cx="12" cy="12" r="5"/></svg>
+                    2 Refined Alignment
+                  </button>
+                  <button id="show-assessment-alignment-report" class="tool-button assessment-report" type="button" disabled title="View test scanbody distances to matched reference scanbodies">
+                    <svg viewBox="0 0 24 24"><path d="M5 5h14M5 12h14M5 19h14"/><path d="M8 5v14"/></svg>
+                    Alignment Report
+                  </button>
+                </div>
+                <div id="assessment-registration-status" class="assessment-registration-status">Add a reference scan and at least one test scan</div>
+              </div>
               <button id="isolate-scanbodies" class="tool-button isolate-button data-processing-control" type="button" disabled title="Separate scanbodies and combine mesh pieces within 5 mm">
                 <svg viewBox="0 0 24 24"><path d="M8 8h8v8H8zM3 3h3v3H3zM18 3h3v3h-3zM3 18h3v3H3zM18 18h3v3h-3zM6 6l2 2m10-2-2 2M6 18l2-2m10 2-2-2"/></svg>
                 Isolate Scanbodies
@@ -236,6 +275,7 @@
 
           <div id="viewer" class="viewer">
             <canvas id="scene-canvas"></canvas>
+            <div id="object-hover-label" class="object-hover-label" hidden></div>
             <aside id="objects-panel" class="objects-panel" aria-label="3D objects">
               <div class="objects-panel-header">
                 <div>
@@ -288,10 +328,24 @@
               <span>DRAG TO ORBIT</span><span>SCROLL TO ZOOM</span><span>RIGHT-DRAG TO PAN</span>
             </div>
             <div class="axis-labels" aria-hidden="true">
-              <span class="origin-caption">LIBRARY ORIGIN</span>
+              <span class="origin-caption">LOCAL LIBRARY ORIGINS</span>
               <span class="axis x">X</span><span class="axis y">Y</span><span class="axis z">Z</span>
             </div>
           </div>
+
+          <section id="report-panel" class="report-panel" hidden>
+            <header class="report-panel-header">
+              <div>
+                <span>REFINED ALIGNMENT REPORT</span>
+                <h2>Trueness Deviation Statistics</h2>
+              </div>
+              <p>Scanbody origin distances from each aligned test scan to its matched reference scan, grouped by test group.</p>
+            </header>
+            <div id="report-summary-cards" class="report-summary-cards"></div>
+            <div id="report-content" class="report-content">
+              <div class="report-empty">Run 1 Initial Alignment or 2 Refined Alignment to generate report statistics.</div>
+            </div>
+          </section>
 
           <div class="stats-bar">
             <div class="stat"><span>TRIANGLES</span><strong id="triangle-count">—</strong></div>
@@ -312,7 +366,7 @@
             <p>Library coordinates → registered scanbody coordinates</p>
           </div>
           <div class="matrix-window-actions">
-            <input id="registration-export-filename" class="matrix-filename-input" type="text" value="FormSpace_Registration_Matrices.json" aria-label="Export JSON filename" />
+            <input id="registration-export-filename" class="matrix-filename-input" type="text" value="OnXTrue_Registration_Matrices.json" aria-label="Export JSON filename" />
             <button id="export-registration-matrices" class="matrix-export-button" type="button">
               <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v4h14v-4"/></svg>
               Export JSON
@@ -326,6 +380,24 @@
       </div>
     </div>
 
-    <script type="module" src="{{ url_for('static', filename='app.js', v='30') }}"></script>
+    <div id="assessment-alignment-window" class="matrix-window" hidden role="dialog" aria-modal="true" aria-labelledby="assessment-alignment-window-title">
+      <div class="matrix-window-card">
+        <header class="matrix-window-header">
+          <div>
+            <span>ACCURACY ASSESSMENT</span>
+            <h2 id="assessment-alignment-window-title">Initial Alignment Distances</h2>
+            <p>Post-alignment test scanbody origin distance to the matched reference scanbody</p>
+          </div>
+          <div class="matrix-window-actions">
+            <button id="close-assessment-alignment-report" class="matrix-close-button" type="button" aria-label="Close alignment report">
+              <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+            </button>
+          </div>
+        </header>
+        <div id="assessment-alignment-list" class="matrix-window-list"></div>
+      </div>
+    </div>
+
+    <script type="module" src="{{ url_for('static', filename='app.js', v='51') }}"></script>
   </body>
 </html>
