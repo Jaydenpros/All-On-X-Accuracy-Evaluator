@@ -18,6 +18,7 @@ const loading = document.querySelector("#loading");
 const clearScansButton = document.querySelector("#clear-scans");
 const wireframeToggle = document.querySelector("#wireframe-toggle");
 const gridToggle = document.querySelector("#grid-toggle");
+const featureSeedArrowsToggle = document.querySelector("#feature-seed-arrows-toggle");
 const objectsPanel = document.querySelector("#objects-panel");
 const objectsList = document.querySelector("#objects-list");
 const dataObjectsList = document.querySelector("#data-objects-list");
@@ -27,11 +28,14 @@ const objectsEmpty = document.querySelector("#objects-empty");
 const showAllObjectsButton = document.querySelector("#show-all-objects");
 const hideAllObjectsButton = document.querySelector("#hide-all-objects");
 const isolateScanbodiesButton = document.querySelector("#isolate-scanbodies");
+const featureDetectButton = document.querySelector("#feature-detect");
+const cropScanbodiesButton = document.querySelector("#crop-scanbodies");
 const registerScanbodiesButton = document.querySelector("#register-scanbodies");
 const refineRegistrationButton = document.querySelector("#refine-registration");
 const planeRefinementButton = document.querySelector("#plane-refinement");
 const centerLibraryButton = document.querySelector("#center-library");
 const deviationLegend = document.querySelector("#deviation-legend");
+const deviationColorMapToggle = document.querySelector("#deviation-color-map-toggle");
 const deviationScaleRange = document.querySelector("#deviation-scale-range");
 const deviationScaleNumber = document.querySelector("#deviation-scale-number");
 const registrationMatricesButton = document.querySelector("#show-registration-matrices");
@@ -117,6 +121,17 @@ const assessmentDataGroups = new Map();
 let assessmentLibrary = null;
 let nextAssessmentTestGroup = 1;
 let deviationScaleMaximum = 0.5;
+let deviationColorMapVisible = true;
+let featureSeedArrowsVisible = false;
+const DEVIATION_DISPLAY_MAX_EDGE = 0.18;
+const DEVIATION_DISPLAY_MAX_SEGMENTS = 12;
+const FEATURE_PLANE_MIN_FRAME_SIZE = 2;
+const FEATURE_PLANE_CLASSIFIER_CANDIDATES = 40;
+const FEATURE_BASE_SEED_COUNT = 500;
+const FEATURE_AXIS_PARALLEL_SEED_COUNT = 80;
+const FEATURE_AXIS_PARALLEL_DOT = 0.85;
+const FEATURE_RADIAL_AXIS_DISTANCE = 0.5;
+const SCANBODY_CROP_TOP_RING_DISTANCE = 4.6;
 const ASSESSMENT_GROUP_COLORS = ["#ffb35c", "#70e39f", "#ff72a8", "#b897ff", "#ffe066", "#56a8ff"];
 const TYPE_CONFIG = {
   library: { color: 0x4f8fff, label: "LIBRARY" },
@@ -151,6 +166,8 @@ function addLocalOriginAxes(entry) {
   originAxes.renderOrder = 10;
   originAxes.material.depthTest = false;
   originAxes.material.depthWrite = false;
+  originAxes.material.vertexColors = false;
+  originAxes.material.color.copy(originSphereColor);
   originAxes.material.transparent = true;
   originAxes.material.opacity = 0.95;
   originSphere.name = "library-local-origin-sphere";
@@ -159,6 +176,19 @@ function addLocalOriginAxes(entry) {
   entry.mesh.add(originSphere);
   entry.originAxes = originAxes;
   entry.originSphere = originSphere;
+}
+
+function setLocalOriginMarkerColor(entry, color) {
+  const markerColor = color instanceof THREE.Color ? color : new THREE.Color(color);
+  if (entry.originAxes?.material) {
+    entry.originAxes.material.vertexColors = false;
+    entry.originAxes.material.color.copy(markerColor);
+    entry.originAxes.material.needsUpdate = true;
+  }
+  if (entry.originSphere?.material) {
+    entry.originSphere.material.color.copy(markerColor);
+    entry.originSphere.material.needsUpdate = true;
+  }
 }
 
 function disposeLocalOriginAxes(entry) {
@@ -173,6 +203,37 @@ function disposeLocalOriginAxes(entry) {
     entry.originSphere.material.dispose();
     entry.originSphere = null;
   }
+}
+
+function disposeFeatureEdges(entry) {
+  if (!entry.featureEdges) {
+    entry.featureEdgesDetected = false;
+    delete entry.featurePlanes;
+    return;
+  }
+  entry.mesh.remove(entry.featureEdges);
+  entry.featureEdges.traverse((child) => {
+    child.geometry?.dispose();
+    if (Array.isArray(child.material)) child.material.forEach((material) => material.dispose());
+    else child.material?.dispose();
+  });
+  entry.featureEdges = null;
+  entry.featureEdgesDetected = false;
+  delete entry.featurePlanes;
+}
+
+function invalidateFeatureDetection(entries = [...models.values()]) {
+  entries.forEach((entry) => disposeFeatureEdges(entry));
+}
+
+function applyFeatureSeedArrowVisibility() {
+  models.forEach((entry) => {
+    if (!entry.featureEdges) return;
+    entry.featureEdges.traverse((child) => {
+      if (!child.name?.startsWith("feature-seed-normal")) return;
+      child.visible = featureSeedArrowsVisible;
+    });
+  });
 }
 
 function resizeRenderer() {
@@ -238,6 +299,24 @@ function updateObjectHoverLabel(event) {
   objectHoverLabel.textContent = hoveredEntry.name;
   objectHoverLabel.hidden = false;
   positionObjectHoverLabel(event);
+}
+
+function centerViewOnMiddleClick(event) {
+  if (event.button !== 1) return;
+  const entries = activeHoverEntries();
+  if (!entries.length) return;
+
+  const canvasRect = canvas.getBoundingClientRect();
+  hoverPointer.x = ((event.clientX - canvasRect.left) / canvasRect.width) * 2 - 1;
+  hoverPointer.y = -(((event.clientY - canvasRect.top) / canvasRect.height) * 2 - 1);
+  hoverRaycaster.setFromCamera(hoverPointer, camera);
+  const intersections = hoverRaycaster.intersectObjects(entries.map((entry) => entry.mesh), false);
+  if (!intersections.length) return;
+
+  event.preventDefault();
+  hideObjectHoverLabel();
+  controls.target.copy(intersections[0].point);
+  controls.update();
 }
 
 function formatBytes(bytes) {
@@ -333,9 +412,18 @@ function updateUI() {
   const scanEntries = entries.filter((entry) => entry.type === "scan");
   const registeredEntries = entries.filter((entry) => entry.type === "registered");
   const initialRegistrations = registeredEntries.filter((entry) => entry.registrationStage === "initial");
+  const isolatedScanEntries = scanEntries.filter((entry) => entry.isolated);
+  const featureDetectionTargets = [...libraryEntries, ...isolatedScanEntries];
+  const featureDetectionReady = libraryEntries.length > 0
+    && isolatedScanEntries.length > 0
+    && featureDetectionTargets.every((entry) => entry.featureEdgesDetected);
+  const cropScanbodiesReady = isolatedScanEntries.length > 0
+    && isolatedScanEntries.every((entry) => entry.featurePlanes?.topRing)
+    && isolatedScanEntries.every((entry) => !entry.registered);
   const completedRegistrations = registeredEntries.filter((entry) => (
     entry.registrationStage === "final" || entry.registrationStage === "plane-refined"
   ));
+  const matrixRegistrations = registeredEntries.filter((entry) => entry.registrationMatrix);
   const pendingPlaneRefinements = registeredEntries.filter((entry) => (
     entry.registrationStage === "final" && !entry.planeRefinementCompleted
   ));
@@ -347,13 +435,17 @@ function updateUI() {
   viewerEmpty.hidden = entries.length > 0;
   clearScansButton.disabled = scanEntries.length === 0;
   isolateScanbodiesButton.disabled = !scanEntries.some((entry) => !entry.isolated);
+  featureDetectButton.disabled = libraryEntries.length === 0 || isolatedScanEntries.length === 0;
+  cropScanbodiesButton.disabled = !cropScanbodiesReady;
+  featureSeedArrowsToggle.disabled = !featureDetectionTargets.some((entry) => entry.featureEdges);
   centerLibraryButton.disabled = libraryEntries.length === 0;
   registerScanbodiesButton.disabled = libraryEntries.length === 0
-    || !scanEntries.some((entry) => entry.isolated && !entry.registered);
+    || !scanEntries.some((entry) => entry.isolated && !entry.registered)
+    || !featureDetectionReady;
   refineRegistrationButton.disabled = initialRegistrations.length === 0;
   planeRefinementButton.disabled = pendingPlaneRefinements.length === 0;
-  registrationMatricesButton.disabled = completedRegistrations.length === 0;
-  deviationLegend.hidden = registeredEntries.length === 0;
+  registrationMatricesButton.disabled = matrixRegistrations.length === 0;
+  updateDeviationLegendState();
   showAllObjectsButton.disabled = entries.length === 0 || visible.length === entries.length;
   hideAllObjectsButton.disabled = entries.length === 0 || visible.length === 0;
   document.querySelector("#scans-label").textContent = `${scanEntries.length} FULL-ARCH SCAN FILE${scanEntries.length === 1 ? "" : "S"}`;
@@ -578,7 +670,8 @@ function removeModel(id, refit = true) {
   if (!entry) return;
   modelsGroup.remove(entry.mesh);
   disposeLocalOriginAxes(entry);
-  entry.mesh.geometry.dispose();
+  disposeFeatureEdges(entry);
+  disposeEntryGeometry(entry);
   entry.mesh.material.dispose();
   entry.row?.remove();
   entry.objectRow?.remove();
@@ -587,11 +680,8 @@ function removeModel(id, refit = true) {
     const scanbody = models.get(entry.registrationFor);
     if (scanbody) {
       scanbody.registered = false;
-      delete scanbody.deviationDistances;
-      scanbody.mesh.geometry.deleteAttribute("color");
-      scanbody.mesh.material.vertexColors = false;
-      scanbody.mesh.material.color.set(TYPE_CONFIG.scan.color);
-      scanbody.mesh.material.needsUpdate = true;
+      clearDeviationMap(scanbody, TYPE_CONFIG.scan.color);
+      clearAlignmentMarker(scanbody);
     }
   }
   if (entry.groupId) {
@@ -602,6 +692,7 @@ function removeModel(id, refit = true) {
       else updateGroupState(group.id);
     }
   }
+  if (entry.type === "library" || entry.type === "scan") invalidateFeatureDetection();
   updateSceneReference();
   updateUI();
   if (refit && models.size) fitView();
@@ -770,6 +861,517 @@ function uniqueVertices(geometry) {
   return vertices;
 }
 
+function planarTriangleData(geometry) {
+  const position = geometry.getAttribute("position");
+  const triangleCount = Math.floor(position.count / 3);
+  const triangles = [];
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const a = new THREE.Vector3().fromBufferAttribute(position, triangle * 3);
+    const b = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 1);
+    const c = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 2);
+    const cross = b.clone().sub(a).cross(c.clone().sub(a));
+    const area = cross.length() / 2;
+    if (area < 1e-8) continue;
+    triangles.push({
+      normal: cross.normalize(),
+      center: a.add(b).add(c).multiplyScalar(1 / 3),
+      area,
+    });
+  }
+  return triangles;
+}
+
+function planarSeedIndices(triangles) {
+  const seedIndices = new Set();
+  const regularSeedCount = Math.min(FEATURE_BASE_SEED_COUNT, triangles.length);
+  const totalArea = triangles.reduce((sum, triangle) => sum + triangle.area, 0);
+  if (totalArea > 0) {
+    let cumulativeArea = 0;
+    let nextTarget = totalArea / (regularSeedCount + 1);
+    const areaStep = totalArea / (regularSeedCount + 1);
+    for (let index = 0; index < triangles.length && seedIndices.size < regularSeedCount; index += 1) {
+      cumulativeArea += triangles[index].area;
+      while (cumulativeArea >= nextTarget && seedIndices.size < regularSeedCount) {
+        seedIndices.add(index);
+        nextTarget += areaStep;
+      }
+    }
+  }
+  return seedIndices;
+}
+
+function areaDistributedIndicesFromPool(triangles, eligibleIndices, count) {
+  const selected = new Set();
+  const cappedCount = Math.min(count, eligibleIndices.length);
+  const totalArea = eligibleIndices.reduce((sum, index) => sum + triangles[index].area, 0);
+  if (totalArea <= 0 || cappedCount <= 0) return selected;
+
+  let cumulativeArea = 0;
+  let nextTarget = totalArea / (cappedCount + 1);
+  const areaStep = totalArea / (cappedCount + 1);
+  for (let poolIndex = 0; poolIndex < eligibleIndices.length && selected.size < cappedCount; poolIndex += 1) {
+    const triangleIndex = eligibleIndices[poolIndex];
+    cumulativeArea += triangles[triangleIndex].area;
+    while (cumulativeArea >= nextTarget && selected.size < cappedCount) {
+      selected.add(triangleIndex);
+      nextTarget += areaStep;
+    }
+  }
+  return selected;
+}
+
+function lineToLineDistance(firstPoint, firstDirection, secondPoint, secondDirection) {
+  const first = firstDirection.clone().normalize();
+  const second = secondDirection.clone().normalize();
+  const delta = firstPoint.clone().sub(secondPoint);
+  const cross = first.clone().cross(second);
+  const denominator = cross.length();
+  if (denominator < 1e-8) return delta.clone().cross(first).length();
+  return Math.abs(delta.dot(cross.normalize()));
+}
+
+function featureSeedSelection(geometry, longAxis) {
+  const triangles = planarTriangleData(geometry);
+  const baseSeedIndices = planarSeedIndices(triangles);
+  const activeSeedIndices = new Set(baseSeedIndices);
+  const excludedSeedIndices = new Set();
+  const addedParallelSeedIndices = new Set();
+  if (!triangles.length || !longAxis) {
+    return { triangles, activeSeedIndices, excludedSeedIndices, addedParallelSeedIndices };
+  }
+
+  const axis = longAxis.clone().normalize();
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  const axisPoint = box ? box.getCenter(new THREE.Vector3()) : new THREE.Vector3();
+
+  baseSeedIndices.forEach((seedIndex) => {
+    const seed = triangles[seedIndex];
+    const axisAlignment = Math.abs(seed.normal.dot(axis));
+    if (axisAlignment >= FEATURE_AXIS_PARALLEL_DOT) return;
+    const distanceToAxis = lineToLineDistance(seed.center, seed.normal, axisPoint, axis);
+    if (distanceToAxis >= FEATURE_RADIAL_AXIS_DISTANCE) return;
+    activeSeedIndices.delete(seedIndex);
+    excludedSeedIndices.add(seedIndex);
+  });
+
+  const parallelPool = [];
+  triangles.forEach((triangle, index) => {
+    if (baseSeedIndices.has(index)) return;
+    if (Math.abs(triangle.normal.dot(axis)) < FEATURE_AXIS_PARALLEL_DOT) return;
+    parallelPool.push(index);
+  });
+
+  areaDistributedIndicesFromPool(triangles, parallelPool, FEATURE_AXIS_PARALLEL_SEED_COUNT)
+    .forEach((seedIndex) => {
+      addedParallelSeedIndices.add(seedIndex);
+      activeSeedIndices.add(seedIndex);
+    });
+
+  return { triangles, activeSeedIndices, excludedSeedIndices, addedParallelSeedIndices };
+}
+
+function addPlanarSeedArrows(overlay, seedSelection, color) {
+  const { triangles, activeSeedIndices, excludedSeedIndices } = seedSelection;
+  activeSeedIndices.forEach((seedIndex) => {
+    const seed = triangles[seedIndex];
+    const arrow = new THREE.ArrowHelper(
+      seed.normal.clone().normalize(),
+      seed.center,
+      0.75,
+      color,
+      0.18,
+      0.09,
+    );
+    arrow.name = "feature-seed-normal";
+    arrow.visible = featureSeedArrowsVisible;
+    arrow.renderOrder = 26;
+    arrow.traverse((child) => {
+      child.renderOrder = 26;
+      if (!child.material) return;
+      child.material.depthTest = true;
+      child.material.depthWrite = false;
+      child.material.transparent = true;
+      child.material.opacity = 0.85;
+    });
+    overlay.add(arrow);
+  });
+  excludedSeedIndices.forEach((seedIndex) => {
+    const seed = triangles[seedIndex];
+    const arrow = new THREE.ArrowHelper(
+      seed.normal.clone().normalize(),
+      seed.center,
+      0.75,
+      0xff2d2d,
+      0.18,
+      0.09,
+    );
+    arrow.name = "feature-seed-normal-excluded";
+    arrow.visible = featureSeedArrowsVisible;
+    arrow.renderOrder = 26;
+    arrow.traverse((child) => {
+      child.renderOrder = 26;
+      if (!child.material) return;
+      child.material.depthTest = true;
+      child.material.depthWrite = false;
+      child.material.transparent = true;
+      child.material.opacity = 0.92;
+    });
+    overlay.add(arrow);
+  });
+}
+
+function axisFromSeedNormals(normals) {
+  if (!normals.length) return null;
+  const scatter = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ];
+  normals.forEach((normal) => {
+    const n = normal.clone().normalize();
+    scatter[0][0] += n.x * n.x;
+    scatter[0][1] += n.x * n.y;
+    scatter[0][2] += n.x * n.z;
+    scatter[1][0] += n.y * n.x;
+    scatter[1][1] += n.y * n.y;
+    scatter[1][2] += n.y * n.z;
+    scatter[2][0] += n.z * n.x;
+    scatter[2][1] += n.z * n.y;
+    scatter[2][2] += n.z * n.z;
+  });
+  const eigenvectors = symmetricEigenvectors3(scatter);
+  return eigenvectors[eigenvectors.length - 1]?.vector.normalize() || null;
+}
+
+function estimateLongAxisFromSeedNormals(geometry) {
+  const triangles = planarTriangleData(geometry);
+  const seedIndices = planarSeedIndices(triangles);
+  const seedNormals = [...seedIndices].map((index) => triangles[index]?.normal).filter(Boolean);
+  const initialAxis = axisFromSeedNormals(seedNormals);
+  if (!initialAxis) return null;
+  const sideNormals = seedNormals.filter((normal) => Math.abs(normal.dot(initialAxis)) < 0.35);
+  return axisFromSeedNormals(sideNormals.length >= 3 ? sideNormals : seedNormals) || initialAxis;
+}
+
+function addLongAxisLine(overlay, geometry, longAxis = null) {
+  const axis = longAxis || estimateLongAxisFromSeedNormals(geometry);
+  if (!axis) return;
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  if (!box) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const halfLength = Math.max(box.getSize(new THREE.Vector3()).length() / 2, 1);
+  const start = center.clone().addScaledVector(axis, -halfLength);
+  const end = center.clone().addScaledVector(axis, halfLength);
+  const axisGeometry = new THREE.BufferGeometry();
+  axisGeometry.setAttribute("position", new THREE.Float32BufferAttribute([
+    start.x, start.y, start.z,
+    end.x, end.y, end.z,
+  ], 3));
+  const line = new THREE.Line(
+    axisGeometry,
+    new THREE.LineBasicMaterial({
+      color: 0x00e5ff,
+      transparent: true,
+      opacity: 1,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  line.name = "feature-long-axis";
+  line.renderOrder = 27;
+  overlay.add(line);
+}
+
+function planePatchProjectedPoints(geometry, patch) {
+  const position = geometry.getAttribute("position");
+  const triangleCount = Math.floor(position.count / 3);
+  const cosineTolerance = Math.cos(THREE.MathUtils.degToRad(14));
+  const distanceTolerance = 0.3;
+  const planeOffset = patch.normal.dot(patch.center);
+  const referenceAxis = Math.abs(patch.normal.z) < 0.9
+    ? new THREE.Vector3(0, 0, 1)
+    : new THREE.Vector3(1, 0, 0);
+  const planeX = referenceAxis.clone().cross(patch.normal).normalize();
+  const planeY = patch.normal.clone().cross(planeX).normalize();
+  const projectedPoints = [];
+
+  function includePoint(point) {
+    const local = point.clone().sub(patch.center);
+    projectedPoints.push(new THREE.Vector2(local.dot(planeX), local.dot(planeY)));
+  }
+
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const a = new THREE.Vector3().fromBufferAttribute(position, triangle * 3);
+    const b = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 1);
+    const c = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 2);
+    const cross = b.clone().sub(a).cross(c.clone().sub(a));
+    const area = cross.length() / 2;
+    if (area < 1e-8) continue;
+    const triangleNormal = cross.normalize();
+    const center = a.clone().add(b).add(c).multiplyScalar(1 / 3);
+    if (Math.abs(triangleNormal.dot(patch.normal)) < cosineTolerance) continue;
+    if (Math.abs(patch.normal.dot(center) - planeOffset) > distanceTolerance) continue;
+    includePoint(a);
+    includePoint(b);
+    includePoint(c);
+  }
+
+  return { projectedPoints, planeX, planeY };
+}
+
+function planePatchFrame(geometry, patch) {
+  const { projectedPoints, planeX, planeY } = planePatchProjectedPoints(geometry, patch);
+  if (!projectedPoints.length) return null;
+  const centroid = projectedPoints.reduce(
+    (sum, point) => sum.add(point),
+    new THREE.Vector2(),
+  ).multiplyScalar(1 / projectedPoints.length);
+  let covarianceXX = 0;
+  let covarianceXY = 0;
+  let covarianceYY = 0;
+  projectedPoints.forEach((point) => {
+    const x = point.x - centroid.x;
+    const y = point.y - centroid.y;
+    covarianceXX += x * x;
+    covarianceXY += x * y;
+    covarianceYY += y * y;
+  });
+  const principalAngle = 0.5 * Math.atan2(2 * covarianceXY, covarianceXX - covarianceYY);
+  const major2d = new THREE.Vector2(Math.cos(principalAngle), Math.sin(principalAngle)).normalize();
+  const minor2d = new THREE.Vector2(-major2d.y, major2d.x);
+  let minMajor = Infinity;
+  let maxMajor = -Infinity;
+  let minMinor = Infinity;
+  let maxMinor = -Infinity;
+  projectedPoints.forEach((point) => {
+    const major = point.dot(major2d);
+    const minor = point.dot(minor2d);
+    minMajor = Math.min(minMajor, major);
+    maxMajor = Math.max(maxMajor, major);
+    minMinor = Math.min(minMinor, minor);
+    maxMinor = Math.max(maxMinor, minor);
+  });
+  return {
+    majorAxis: planeX.clone().multiplyScalar(major2d.x).addScaledVector(planeY, major2d.y).normalize(),
+    minorAxis: planeX.clone().multiplyScalar(minor2d.x).addScaledVector(planeY, minor2d.y).normalize(),
+    minMajor,
+    maxMajor,
+    minMinor,
+    maxMinor,
+    length: maxMajor - minMajor,
+    width: maxMinor - minMinor,
+  };
+}
+
+function planeRectangleFrameGeometry(geometry, patches) {
+  const linePositions = [];
+
+  patches.forEach((patch) => {
+    const frame = planePatchFrame(geometry, patch);
+    if (!frame) return;
+    const lift = Math.max(0.01, Math.sqrt(Math.max(patch.area, 0)) * 0.002);
+    const liftedCenter = patch.center.clone().addScaledVector(patch.normal, lift);
+    const corners = [
+      liftedCenter.clone().addScaledVector(frame.majorAxis, frame.minMajor).addScaledVector(frame.minorAxis, frame.minMinor),
+      liftedCenter.clone().addScaledVector(frame.majorAxis, frame.maxMajor).addScaledVector(frame.minorAxis, frame.minMinor),
+      liftedCenter.clone().addScaledVector(frame.majorAxis, frame.maxMajor).addScaledVector(frame.minorAxis, frame.maxMinor),
+      liftedCenter.clone().addScaledVector(frame.majorAxis, frame.minMajor).addScaledVector(frame.minorAxis, frame.maxMinor),
+    ];
+    for (let corner = 0; corner < corners.length; corner += 1) {
+      const start = corners[corner];
+      const end = corners[(corner + 1) % corners.length];
+      linePositions.push(start.x, start.y, start.z, end.x, end.y, end.z);
+    }
+  });
+
+  if (!linePositions.length) return null;
+  const lineGeometry = new THREE.BufferGeometry();
+  lineGeometry.setAttribute("position", new THREE.Float32BufferAttribute(linePositions, 3));
+  return lineGeometry;
+}
+
+function planeBorderGeometry(geometry, patches) {
+  const position = geometry.getAttribute("position");
+  const triangleCount = Math.floor(position.count / 3);
+  const cosineTolerance = Math.cos(THREE.MathUtils.degToRad(14));
+  const distanceTolerance = 0.3;
+  const linePositions = [];
+
+  function vertexKey(point) {
+    return `${Math.round(point.x * 100000)},${Math.round(point.y * 100000)},${Math.round(point.z * 100000)}`;
+  }
+
+  patches.forEach((patch) => {
+    const boundaryEdges = new Map();
+    const planeOffset = patch.normal.dot(patch.center);
+    const lift = Math.max(0.015, Math.sqrt(Math.max(patch.area, 0)) * 0.003);
+
+    function addBoundaryEdge(first, second) {
+      const firstKey = vertexKey(first);
+      const secondKey = vertexKey(second);
+      const key = firstKey < secondKey ? `${firstKey}|${secondKey}` : `${secondKey}|${firstKey}`;
+      const existing = boundaryEdges.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        boundaryEdges.set(key, {
+          first: first.clone().addScaledVector(patch.normal, lift),
+          second: second.clone().addScaledVector(patch.normal, lift),
+          count: 1,
+        });
+      }
+    }
+
+    for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+      const a = new THREE.Vector3().fromBufferAttribute(position, triangle * 3);
+      const b = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 1);
+      const c = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 2);
+      const cross = b.clone().sub(a).cross(c.clone().sub(a));
+      const area = cross.length() / 2;
+      if (area < 1e-8) continue;
+      const triangleNormal = cross.normalize();
+      const center = a.clone().add(b).add(c).multiplyScalar(1 / 3);
+      if (Math.abs(triangleNormal.dot(patch.normal)) < cosineTolerance) continue;
+      if (Math.abs(patch.normal.dot(center) - planeOffset) > distanceTolerance) continue;
+      addBoundaryEdge(a, b);
+      addBoundaryEdge(b, c);
+      addBoundaryEdge(c, a);
+    }
+
+    boundaryEdges.forEach((edge) => {
+      if (edge.count !== 1) return;
+      linePositions.push(
+        edge.first.x, edge.first.y, edge.first.z,
+        edge.second.x, edge.second.y, edge.second.z,
+      );
+    });
+  });
+
+  if (!linePositions.length) return null;
+  const lineGeometry = new THREE.BufferGeometry();
+  lineGeometry.setAttribute("position", new THREE.Float32BufferAttribute(linePositions, 3));
+  return lineGeometry;
+}
+
+function classifyFeaturePlanes(geometry, patches, longAxis) {
+  if (!longAxis) return { topRing: null, sideFace: null };
+  const axis = longAxis.clone().normalize();
+  let topRing = null;
+  let sideFace = null;
+
+  patches.forEach((patch) => {
+    const frame = planePatchFrame(geometry, patch);
+    if (!frame) return;
+    if (frame.length < FEATURE_PLANE_MIN_FRAME_SIZE || frame.width < FEATURE_PLANE_MIN_FRAME_SIZE) return;
+    const shape = planePatchShapeMetrics(geometry, patch);
+    const normalAlignment = Math.abs(patch.normal.dot(axis));
+    const majorAxisAlignment = Math.abs(frame.majorAxis.dot(axis));
+    const longerSide = Math.max(frame.length, frame.width);
+    const shorterSide = Math.min(frame.length, frame.width);
+    const frameAspect = longerSide / Math.max(shorterSide, 1e-6);
+
+    if (normalAlignment >= 0.85) {
+      const topScore = patch.area
+        * (1 + normalAlignment)
+        * (1 + shape.annularScore / Math.max(patch.area, 1e-6));
+      if (!topRing || topScore > topRing.score) topRing = { patch, score: topScore };
+    }
+
+    if (normalAlignment <= 0.25 && majorAxisAlignment >= 0.75 && shape.fillRatio >= 0.45) {
+      const sideScore = patch.area
+        * (1 + (1 - normalAlignment))
+        * (1 + majorAxisAlignment)
+        * shape.fillRatio
+        * Math.min(frameAspect, 4);
+      if (!sideFace || sideScore > sideFace.score) sideFace = { patch, score: sideScore };
+    }
+  });
+
+  return {
+    topRing: topRing?.patch || null,
+    sideFace: sideFace?.patch || null,
+  };
+}
+
+function clonePlanePatch(patch) {
+  if (!patch) return null;
+  return {
+    normal: patch.normal.clone(),
+    center: patch.center.clone(),
+    offset: patch.offset,
+    area: patch.area,
+  };
+}
+
+function applyFeaturePlanes(entry) {
+  disposeFeatureEdges(entry);
+  const sourceGeometry = entry.deviationBaseGeometry || entry.mesh.geometry;
+  const longAxis = estimateLongAxisFromSeedNormals(sourceGeometry);
+  const seedSelection = featureSeedSelection(sourceGeometry, longAxis);
+  const candidates = detectPlanarPatches(
+    sourceGeometry,
+    FEATURE_PLANE_CLASSIFIER_CANDIDATES,
+    seedSelection.activeSeedIndices,
+    seedSelection.triangles,
+  );
+  const featurePlanes = classifyFeaturePlanes(sourceGeometry, candidates, longAxis);
+  entry.featurePlanes = {
+    topRing: clonePlanePatch(featurePlanes.topRing),
+    sideFace: clonePlanePatch(featurePlanes.sideFace),
+    longAxis: longAxis?.clone() || null,
+  };
+  const patches = [featurePlanes.topRing, featurePlanes.sideFace].filter(Boolean);
+  const frameGeometry = planeRectangleFrameGeometry(sourceGeometry, patches);
+  const borderGeometry = planeBorderGeometry(sourceGeometry, patches);
+  const color = entry.type === "library" ? 0xffffff : 0xd9ff43;
+  const overlay = new THREE.Group();
+  overlay.name = "feature-plane-overlay";
+  addPlanarSeedArrows(overlay, seedSelection, entry.type === "library" ? 0x56a8ff : 0xffb35c);
+  addLongAxisLine(overlay, sourceGeometry, longAxis);
+  if (frameGeometry) {
+    const frameLines = new THREE.LineSegments(
+      frameGeometry,
+      new THREE.LineBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.96,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    );
+    frameLines.name = "feature-plane-frame";
+    overlay.add(frameLines);
+  }
+  if (borderGeometry) {
+    const borderLines = new THREE.LineSegments(
+      borderGeometry,
+      new THREE.LineBasicMaterial({
+        color: 0xff35ff,
+        transparent: true,
+        opacity: 1,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    );
+    borderLines.name = "feature-plane-border";
+    overlay.add(borderLines);
+  }
+  overlay.traverse((child) => {
+    if (!child.isLineSegments) return;
+    child.renderOrder = 25;
+  });
+  if (!overlay.children.length) {
+    entry.featureEdgesDetected = true;
+    return 0;
+  }
+  entry.mesh.add(overlay);
+  entry.featureEdges = overlay;
+  entry.featureEdgesDetected = true;
+  return patches.length;
+}
+
 function componentsAreClose(first, second, distance) {
   const distanceSquared = distance * distance;
   if (boxDistanceSquared(first.boundingBox, second.boundingBox) > distanceSquared) return false;
@@ -864,6 +1466,70 @@ function groupNearbyComponents(components, distance = 5) {
   });
 }
 
+function geometryMaxDimension(geometry) {
+  geometry.computeBoundingBox();
+  const size = geometry.boundingBox.getSize(new THREE.Vector3());
+  return Math.max(size.x, size.y, size.z);
+}
+
+function filterSmallComponents(components, minimumDimension = 3) {
+  const kept = [];
+  let removed = 0;
+  components.forEach((component) => {
+    if (geometryMaxDimension(component) >= minimumDimension) {
+      kept.push(component);
+      return;
+    }
+    component.dispose();
+    removed += 1;
+  });
+  return { kept, removed };
+}
+
+function cropGeometryToTopRingDistance(geometry, topRing, maximumDistance = SCANBODY_CROP_TOP_RING_DISTANCE) {
+  const position = geometry.getAttribute("position");
+  const triangleCount = Math.floor(position.count / 3);
+  const planeNormal = topRing.normal.clone().normalize();
+  const planeOffset = planeNormal.dot(topRing.center);
+  const positions = [];
+
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const a = new THREE.Vector3().fromBufferAttribute(position, triangle * 3);
+    const b = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 1);
+    const c = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 2);
+    const center = a.clone().add(b).add(c).multiplyScalar(1 / 3);
+    const distance = Math.abs(planeNormal.dot(center) - planeOffset);
+    if (distance > maximumDistance) continue;
+    positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  }
+
+  if (!positions.length || positions.length === position.array.length) return null;
+  const croppedGeometry = new THREE.BufferGeometry();
+  croppedGeometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  croppedGeometry.computeVertexNormals();
+  croppedGeometry.computeBoundingBox();
+  return croppedGeometry;
+}
+
+function refreshModelGeometryMetadata(entry) {
+  entry.mesh.geometry.computeBoundingBox();
+  entry.mesh.geometry.computeVertexNormals();
+  entry.size = entry.mesh.geometry.boundingBox.getSize(new THREE.Vector3());
+  entry.triangles = entry.mesh.geometry.getAttribute("position").count / 3;
+  entry.bytes = 84 + entry.triangles * 50;
+  entry.row.querySelector(".model-meta").textContent = `${TYPE_CONFIG[entry.type].label} · ${formatBytes(entry.bytes)} · ${formatNumber(entry.triangles)} TRI`;
+}
+
+function replaceEntryGeometry(entry, geometry) {
+  disposeFeatureEdges(entry);
+  clearDeviationMap(entry, TYPE_CONFIG[entry.type].color);
+  clearAlignmentMarker(entry);
+  const previousGeometry = entry.mesh.geometry;
+  entry.mesh.geometry = geometry;
+  previousGeometry.dispose();
+  refreshModelGeometryMetadata(entry);
+}
+
 function sampleGeometryPoints(geometry, maximum = 900) {
   const position = geometry.getAttribute("position");
   const step = Math.max(1, Math.floor(position.count / maximum));
@@ -878,28 +1544,6 @@ function pointCentroid(points) {
   const center = new THREE.Vector3();
   points.forEach((point) => center.add(point));
   return center.multiplyScalar(1 / Math.max(points.length, 1));
-}
-
-function principalAxis(points) {
-  const center = pointCentroid(points);
-  let xx = 0; let xy = 0; let xz = 0;
-  let yy = 0; let yz = 0; let zz = 0;
-  points.forEach((point) => {
-    const x = point.x - center.x;
-    const y = point.y - center.y;
-    const z = point.z - center.z;
-    xx += x * x; xy += x * y; xz += x * z;
-    yy += y * y; yz += y * z; zz += z * z;
-  });
-  let axis = new THREE.Vector3(1, 1, 1).normalize();
-  for (let iteration = 0; iteration < 20; iteration += 1) {
-    axis = new THREE.Vector3(
-      xx * axis.x + xy * axis.y + xz * axis.z,
-      xy * axis.x + yy * axis.y + yz * axis.z,
-      xz * axis.x + yz * axis.y + zz * axis.z,
-    ).normalize();
-  }
-  return axis;
 }
 
 function buildKdTree(points, indices = points.map((_, index) => index), depth = 0) {
@@ -969,56 +1613,13 @@ function bestRigidTransform(source, target) {
   return new THREE.Matrix4().compose(translation, rotation, new THREE.Vector3(1, 1, 1));
 }
 
-function initialRegistrationMatrices(sourcePoints, targetPoints) {
-  const sourceCenter = pointCentroid(sourcePoints);
-  const targetCenter = pointCentroid(targetPoints);
-  const sourceAxis = principalAxis(sourcePoints);
-  const targetAxis = principalAxis(targetPoints);
-  const matrices = [];
-
-  [1, -1].forEach((direction) => {
-    const directedTargetAxis = targetAxis.clone().multiplyScalar(direction);
-    const align = new THREE.Quaternion().setFromUnitVectors(sourceAxis, directedTargetAxis);
-    for (let turn = 0; turn < 4; turn += 1) {
-      const spin = new THREE.Quaternion().setFromAxisAngle(directedTargetAxis, turn * Math.PI / 2);
-      const rotation = spin.multiply(align).normalize();
-      const translation = targetCenter.clone().sub(sourceCenter.clone().applyQuaternion(rotation));
-      matrices.push(new THREE.Matrix4().compose(translation, rotation, new THREE.Vector3(1, 1, 1)));
-    }
-  });
-  return matrices;
-}
-
-function detectPlanarPatches(geometry, maximumPatches = 5) {
-  const position = geometry.getAttribute("position");
-  const triangleCount = Math.floor(position.count / 3);
-  const triangles = [];
-  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
-    const a = new THREE.Vector3().fromBufferAttribute(position, triangle * 3);
-    const b = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 1);
-    const c = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 2);
-    const cross = b.clone().sub(a).cross(c.clone().sub(a));
-    const area = cross.length() / 2;
-    if (area < 1e-8) continue;
-    triangles.push({
-      normal: cross.normalize(),
-      center: a.add(b).add(c).multiplyScalar(1 / 3),
-      area,
-    });
-  }
+function detectPlanarPatches(geometry, maximumPatches = 5, seedIndicesOverride = null, trianglesOverride = null) {
+  const triangles = trianglesOverride || planarTriangleData(geometry);
   if (!triangles.length) return [];
 
-  const seedIndices = new Set();
-  const stride = Math.max(1, Math.floor(triangles.length / 120));
-  for (let index = 0; index < triangles.length; index += stride) seedIndices.add(index);
-  [...triangles]
-    .map((triangle, index) => ({ index, area: triangle.area }))
-    .sort((first, second) => second.area - first.area)
-    .slice(0, 50)
-    .forEach(({ index }) => seedIndices.add(index));
-
+  const seedIndices = seedIndicesOverride || planarSeedIndices(triangles);
   const cosineTolerance = Math.cos(THREE.MathUtils.degToRad(14));
-  const distanceTolerance = 0.3;
+  const distanceTolerance = 0.5;
   const candidates = [];
 
   seedIndices.forEach((seedIndex) => {
@@ -1053,75 +1654,81 @@ function detectPlanarPatches(geometry, maximumPatches = 5) {
   return patches;
 }
 
-function dominantPerpendicularPair(patches) {
-  let best = null;
-  for (let first = 0; first < patches.length; first += 1) {
-    for (let second = first + 1; second < patches.length; second += 1) {
-      const perpendicularity = Math.abs(patches[first].normal.dot(patches[second].normal));
-      if (perpendicularity > 0.42) continue;
-      const score = patches[first].area + patches[second].area;
-      if (!best || score > best.score) best = { first: patches[first], second: patches[second], score };
-    }
-  }
-  return best;
-}
+function planePatchShapeMetrics(geometry, patch) {
+  const position = geometry.getAttribute("position");
+  const triangleCount = Math.floor(position.count / 3);
+  const normal = patch.normal.clone().normalize();
+  const reference = Math.abs(normal.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+  const u = reference.clone().cross(normal).normalize();
+  const v = normal.clone().cross(u).normalize();
+  const cosineTolerance = Math.cos(THREE.MathUtils.degToRad(14));
+  const distanceTolerance = 0.3;
+  const planeOffset = patch.normal.dot(patch.center);
+  let area = 0;
+  let uu = 0; let uv = 0; let vv = 0;
+  let minU = Infinity; let maxU = -Infinity;
+  let minV = Infinity; let maxV = -Infinity;
 
-function frameFromPlaneNormals(firstNormal, secondNormal) {
-  const x = firstNormal.clone().normalize();
-  const z = secondNormal.clone().addScaledVector(x, -secondNormal.dot(x)).normalize();
-  const y = z.clone().cross(x).normalize();
-  return new THREE.Matrix4().makeBasis(x, y, z);
-}
-
-function planeAlignedInitialMatrices(sourceGeometry, targetGeometry, sourcePoints, targetPoints) {
-  const sourcePair = dominantPerpendicularPair(detectPlanarPatches(sourceGeometry));
-  const targetPatches = detectPlanarPatches(targetGeometry);
-  if (!sourcePair || targetPatches.length < 2) return [];
-
-  const sourceCenter = pointCentroid(sourcePoints);
-  const targetCenter = pointCentroid(targetPoints);
-  const targetPairs = [];
-  for (let first = 0; first < targetPatches.length; first += 1) {
-    for (let second = first + 1; second < targetPatches.length; second += 1) {
-      if (Math.abs(targetPatches[first].normal.dot(targetPatches[second].normal)) < 0.42) {
-        targetPairs.push({ first: targetPatches[first], second: targetPatches[second] });
-      }
-    }
-  }
-  targetPairs.sort((a, b) => (b.first.area + b.second.area) - (a.first.area + a.second.area));
-
-  const matrices = [];
-  targetPairs.slice(0, 3).forEach((targetPair) => {
-    [
-      [targetPair.first, targetPair.second],
-      [targetPair.second, targetPair.first],
-    ].forEach(([targetFirst, targetSecond]) => {
-      [-1, 1].forEach((firstSign) => {
-        [-1, 1].forEach((secondSign) => {
-          const sourceFrame = frameFromPlaneNormals(sourcePair.first.normal, sourcePair.second.normal);
-          const targetFrame = frameFromPlaneNormals(
-            targetFirst.normal.clone().multiplyScalar(firstSign),
-            targetSecond.normal.clone().multiplyScalar(secondSign),
-          );
-          const rotationMatrix = targetFrame.clone().multiply(sourceFrame.clone().invert());
-          const rotation = new THREE.Quaternion().setFromRotationMatrix(rotationMatrix);
-          const targetX = new THREE.Vector3().setFromMatrixColumn(targetFrame, 0);
-          const targetY = new THREE.Vector3().setFromMatrixColumn(targetFrame, 1);
-          const targetZ = new THREE.Vector3().setFromMatrixColumn(targetFrame, 2);
-          const firstDelta = targetFirst.center.clone()
-            .sub(sourcePair.first.center.clone().applyQuaternion(rotation));
-          const secondDelta = targetSecond.center.clone()
-            .sub(sourcePair.second.center.clone().applyQuaternion(rotation));
-          const centerDelta = targetCenter.clone().sub(sourceCenter.clone().applyQuaternion(rotation));
-          const translation = targetX.clone().multiplyScalar(firstDelta.dot(targetX))
-            .addScaledVector(targetZ, secondDelta.dot(targetZ))
-            .addScaledVector(targetY, centerDelta.dot(targetY));
-          matrices.push(new THREE.Matrix4().compose(translation, rotation, new THREE.Vector3(1, 1, 1)));
-        });
-      });
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const a = new THREE.Vector3().fromBufferAttribute(position, triangle * 3);
+    const b = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 1);
+    const c = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 2);
+    const cross = b.clone().sub(a).cross(c.clone().sub(a));
+    const triangleArea = cross.length() / 2;
+    if (triangleArea < 1e-8) continue;
+    const triangleNormal = cross.normalize();
+    const center = a.clone().add(b).add(c).multiplyScalar(1 / 3);
+    if (Math.abs(triangleNormal.dot(patch.normal)) < cosineTolerance) continue;
+    if (Math.abs(patch.normal.dot(center) - planeOffset) > distanceTolerance) continue;
+    area += triangleArea;
+    [a, b, c].forEach((point) => {
+      const delta = point.clone().sub(patch.center);
+      const x = delta.dot(u);
+      const y = delta.dot(v);
+      uu += x * x * triangleArea / 3;
+      uv += x * y * triangleArea / 3;
+      vv += y * y * triangleArea / 3;
+      minU = Math.min(minU, x);
+      maxU = Math.max(maxU, x);
+      minV = Math.min(minV, y);
+      maxV = Math.max(maxV, y);
     });
-  });
-  return matrices;
+  }
+
+  if (area <= 0) {
+    return {
+      aspect: 1,
+      fillRatio: 0,
+      annularScore: 0,
+      rectangularScore: 0,
+      u,
+      v,
+      bounds: { minU: 0, maxU: 0, minV: 0, maxV: 0 },
+    };
+  }
+  uu /= area;
+  uv /= area;
+  vv /= area;
+  const trace = uu + vv;
+  const determinant = uu * vv - uv * uv;
+  const discriminant = Math.sqrt(Math.max(0, trace * trace / 4 - determinant));
+  const major = Math.max(trace / 2 + discriminant, 1e-8);
+  const minor = Math.max(trace / 2 - discriminant, 1e-8);
+  const aspect = Math.sqrt(major / minor);
+  const boundsArea = Math.max((maxU - minU) * (maxV - minV), 1e-8);
+  const fillRatio = THREE.MathUtils.clamp(area / boundsArea, 0, 1);
+  const compactness = 1 / (1 + Math.abs(Math.log(aspect)));
+  const annularScore = area * compactness * (1 + Math.max(0, 0.92 - fillRatio));
+  const rectangularScore = area * Math.max(1, aspect) * fillRatio;
+  return {
+    aspect,
+    fillRatio,
+    annularScore,
+    rectangularScore,
+    u,
+    v,
+    bounds: { minU, maxU, minV, maxV },
+  };
 }
 
 function refineRegistration(sourcePoints, targetPoints, initialMatrix) {
@@ -1164,28 +1771,96 @@ function scoreInitialRegistration(sourcePoints, targetPoints, matrix) {
   return Math.sqrt(retained.reduce((sum, distance) => sum + distance, 0) / retained.length);
 }
 
-function prepareRegistration(libraryGeometry, scanGeometry) {
-  const sourcePoints = sampleGeometryPoints(libraryGeometry, 750);
-  const targetPoints = sampleGeometryPoints(scanGeometry, 1100);
-  const planeInitials = planeAlignedInitialMatrices(
-    libraryGeometry,
-    scanGeometry,
-    sourcePoints,
-    targetPoints,
+function hasRequiredAlignmentFeatures(entry) {
+  return Boolean(
+    entry.featureEdgesDetected
+    && entry.featurePlanes?.topRing
+    && entry.featurePlanes?.sideFace
+    && entry.featurePlanes?.longAxis,
   );
-  const fallbackInitials = initialRegistrationMatrices(sourcePoints, targetPoints);
-  const candidates = [...planeInitials, ...fallbackInitials];
+}
+
+function detectedFeatureFrameVariants(entry) {
+  const { topRing, sideFace, longAxis } = entry.featurePlanes || {};
+  if (!topRing || !sideFace || !longAxis) return [];
+  const axis = longAxis.clone().normalize();
+  const topNormal = topRing.normal.clone().normalize();
+  const sideNormal = sideFace.normal.clone().normalize();
+  const variants = [];
+  [-1, 1].forEach((zSign) => {
+    const z = axis.clone().multiplyScalar(zSign).normalize();
+    if (topNormal.dot(z) < 0.75) return;
+    [-1, 1].forEach((xSign) => {
+      const x = sideNormal.clone().multiplyScalar(xSign).addScaledVector(z, -sideNormal.dot(z) * xSign);
+      if (x.lengthSq() < 1e-10) return;
+      x.normalize();
+      const y = z.clone().cross(x).normalize();
+      variants.push({
+        frame: new THREE.Matrix4().makeBasis(x, y, z),
+        x,
+        y,
+        z,
+      });
+    });
+  });
+  return variants;
+}
+
+function featureAlignmentCandidates(libraryEntry, scanbodyEntry, sourcePoints, targetPoints) {
+  const sourceFrames = detectedFeatureFrameVariants(libraryEntry);
+  const targetFrames = detectedFeatureFrameVariants(scanbodyEntry);
+  const sourceCentroid = pointCentroid(sourcePoints);
+  const targetCentroid = pointCentroid(targetPoints);
+  const sourceTop = libraryEntry.featurePlanes.topRing;
+  const sourceSide = libraryEntry.featurePlanes.sideFace;
+  const targetTop = scanbodyEntry.featurePlanes.topRing;
+  const targetSide = scanbodyEntry.featurePlanes.sideFace;
+  const candidates = [];
+
+  sourceFrames.forEach((sourceFrame) => {
+    targetFrames.forEach((targetFrame) => {
+      const rotationMatrix = targetFrame.frame.clone().multiply(sourceFrame.frame.clone().invert());
+      const rotation = new THREE.Quaternion().setFromRotationMatrix(rotationMatrix);
+      const rotatedTopCenter = sourceTop.center.clone().applyQuaternion(rotation);
+      const rotatedSideCenter = sourceSide.center.clone().applyQuaternion(rotation);
+      const rotatedCentroid = sourceCentroid.clone().applyQuaternion(rotation);
+      const translation = targetFrame.z.clone().multiplyScalar(targetTop.center.clone().sub(rotatedTopCenter).dot(targetFrame.z))
+        .addScaledVector(targetFrame.x, targetSide.center.clone().sub(rotatedSideCenter).dot(targetFrame.x))
+        .addScaledVector(targetFrame.y, targetCentroid.clone().sub(rotatedCentroid).dot(targetFrame.y));
+      candidates.push({
+        matrix: new THREE.Matrix4().compose(translation, rotation, new THREE.Vector3(1, 1, 1)),
+        targetRingPlane: targetTop,
+      });
+    });
+  });
+
+  return candidates;
+}
+
+function prepareFeatureRegistration(libraryEntry, scanbodyEntry) {
+  const sourcePoints = sampleGeometryPoints(libraryEntry.mesh.geometry, 750);
+  const targetPoints = sampleGeometryPoints(scanbodyEntry.mesh.geometry, 1100);
+  const candidates = featureAlignmentCandidates(libraryEntry, scanbodyEntry, sourcePoints, targetPoints);
+  if (!candidates.length) {
+    throw new Error("Run Feature Detect again; long axis, top ring, and side face are required.");
+  }
   let preview = null;
-  candidates.forEach((matrix) => {
-    const error = scoreInitialRegistration(sourcePoints, targetPoints, matrix);
-    if (!preview || error < preview.error) preview = { matrix: matrix.clone(), error };
+  candidates.forEach((candidate) => {
+    const error = scoreInitialRegistration(sourcePoints, targetPoints, candidate.matrix);
+    if (!preview || error < preview.error) {
+      preview = {
+        matrix: candidate.matrix.clone(),
+        error,
+        targetRingPlane: candidate.targetRingPlane || null,
+      };
+    }
   });
   return {
     sourcePoints,
     targetPoints,
-    candidates,
+    candidates: candidates.map((candidate) => candidate.matrix),
     preview,
-    initialization: planeInitials.length ? "two-plane + principal-axis candidates" : "principal-axis candidates",
+    initialization: "detected long-axis/top-ring/side-plane features",
   };
 }
 
@@ -1314,8 +1989,138 @@ function deviationColor(value) {
   return stops[stops.length - 1][1].clone();
 }
 
+function subdivideGeometryForDeviation(geometry) {
+  const position = geometry.getAttribute("position");
+  const positions = [];
+  const triangleCount = Math.floor(position.count / 3);
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    const a = new THREE.Vector3().fromBufferAttribute(position, triangle * 3);
+    const b = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 1);
+    const c = new THREE.Vector3().fromBufferAttribute(position, triangle * 3 + 2);
+    const longestEdge = Math.max(a.distanceTo(b), b.distanceTo(c), c.distanceTo(a));
+    const segments = Math.min(
+      DEVIATION_DISPLAY_MAX_SEGMENTS,
+      Math.max(1, Math.ceil(longestEdge / DEVIATION_DISPLAY_MAX_EDGE)),
+    );
+    const grid = [];
+    for (let i = 0; i <= segments; i += 1) {
+      grid[i] = [];
+      for (let j = 0; j <= segments - i; j += 1) {
+        const u = i / segments;
+        const v = j / segments;
+        grid[i][j] = a.clone()
+          .multiplyScalar(1 - u - v)
+          .addScaledVector(b, u)
+          .addScaledVector(c, v);
+      }
+    }
+    const pushTriangle = (first, second, third) => {
+      [first, second, third].forEach((point) => positions.push(point.x, point.y, point.z));
+    };
+    for (let i = 0; i < segments; i += 1) {
+      for (let j = 0; j < segments - i; j += 1) {
+        pushTriangle(grid[i][j], grid[i + 1][j], grid[i][j + 1]);
+        if (j < segments - i - 1) {
+          pushTriangle(grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]);
+        }
+      }
+    }
+  }
+  const displayGeometry = new THREE.BufferGeometry();
+  displayGeometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  displayGeometry.computeVertexNormals();
+  return displayGeometry;
+}
+
+function prepareDeviationDisplayGeometry(entry) {
+  const baseGeometry = entry.deviationBaseGeometry || entry.mesh.geometry;
+  const displayGeometry = subdivideGeometryForDeviation(baseGeometry);
+  if (entry.deviationBaseGeometry) {
+    entry.mesh.geometry.dispose();
+  } else {
+    entry.deviationBaseGeometry = entry.mesh.geometry;
+  }
+  entry.mesh.geometry = displayGeometry;
+  return displayGeometry;
+}
+
+function clearDeviationMap(entry, fallbackColor = TYPE_CONFIG.scan.color) {
+  delete entry.deviationDistances;
+  if (entry.deviationBaseGeometry) {
+    entry.mesh.geometry.dispose();
+    entry.mesh.geometry = entry.deviationBaseGeometry;
+    delete entry.deviationBaseGeometry;
+  } else {
+    entry.mesh.geometry.deleteAttribute("color");
+  }
+  entry.mesh.material.vertexColors = false;
+  entry.mesh.material.color.set(fallbackColor);
+  entry.mesh.material.needsUpdate = true;
+}
+
+function deviationEntriesForActiveModule() {
+  const source = activeModule === "accuracy-assessment" ? assessmentModels : models;
+  return [...source.values()].filter((entry) => entry.deviationDistances);
+}
+
+function setDeviationEntryBaseColor(entry) {
+  entry.mesh.geometry.deleteAttribute("color");
+  entry.mesh.material.vertexColors = false;
+  const color = entry.color instanceof THREE.Color
+    ? entry.color
+    : new THREE.Color(TYPE_CONFIG[entry.type]?.color || TYPE_CONFIG.scan.color);
+  entry.mesh.material.color.copy(color);
+  entry.mesh.material.needsUpdate = true;
+}
+
+function updateDeviationLegendState() {
+  const hasDeviationMap = deviationEntriesForActiveModule().length > 0;
+  deviationLegend.hidden = !hasDeviationMap || activeModule === "report";
+  deviationLegend.classList.toggle("deviation-map-off", !deviationColorMapVisible);
+  deviationScaleRange.disabled = !deviationColorMapVisible;
+  deviationScaleNumber.disabled = !deviationColorMapVisible;
+  deviationColorMapToggle.checked = deviationColorMapVisible;
+}
+
+function applyDeviationColorMapVisibility() {
+  const allEntries = [...models.values(), ...assessmentModels.values()].filter((entry) => entry.deviationDistances);
+  allEntries.forEach((entry) => {
+    if (deviationColorMapVisible) colorizeDeviationEntry(entry, deviationScaleMaximum);
+    else setDeviationEntryBaseColor(entry);
+  });
+  updateDeviationLegendState();
+  renderReportModule();
+}
+
+function disposeAlignmentMarker(entry) {
+  if (!entry.alignmentTopRingMarker) return;
+  entry.mesh.remove(entry.alignmentTopRingMarker);
+  entry.alignmentTopRingMarker.traverse((child) => {
+    child.geometry?.dispose();
+    if (Array.isArray(child.material)) child.material.forEach((material) => material.dispose());
+    else child.material?.dispose();
+  });
+  entry.alignmentTopRingMarker = null;
+}
+
+function clearAlignmentMarker(entry) {
+  disposeAlignmentMarker(entry);
+}
+
+function disposeEntryGeometry(entry) {
+  disposeAlignmentMarker(entry);
+  const geometries = new Set([entry.mesh.geometry]);
+  if (entry.deviationBaseGeometry) geometries.add(entry.deviationBaseGeometry);
+  geometries.forEach((geometry) => geometry.dispose());
+  delete entry.deviationBaseGeometry;
+}
+
 function colorizeDeviationEntry(scanEntry, maximum = deviationScaleMaximum) {
   if (!scanEntry.deviationDistances) return;
+  if (!deviationColorMapVisible) {
+    setDeviationEntryBaseColor(scanEntry);
+    return;
+  }
   const position = scanEntry.mesh.geometry.getAttribute("position");
   const colors = new Float32Array(position.count * 3);
   scanEntry.deviationDistances.forEach((distance, index) => {
@@ -1328,6 +2133,28 @@ function colorizeDeviationEntry(scanEntry, maximum = deviationScaleMaximum) {
   scanEntry.mesh.material.vertexColors = true;
   scanEntry.mesh.material.color.set(0xffffff);
   scanEntry.mesh.material.needsUpdate = true;
+}
+
+function addTopRingMarker(entry, plane) {
+  disposeAlignmentMarker(entry);
+  const normal = plane.normal.clone().normalize();
+  const marker = new THREE.Mesh(
+    new THREE.TorusGeometry(3.5, 0.07, 8, 128),
+    new THREE.MeshBasicMaterial({
+      color: 0xd9ff43,
+      transparent: true,
+      opacity: 1,
+      side: THREE.DoubleSide,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  marker.position.copy(plane.center).addScaledVector(normal, 0.18);
+  marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+  marker.name = "detected-top-ring-7mm";
+  marker.renderOrder = 30;
+  entry.mesh.add(marker);
+  entry.alignmentTopRingMarker = marker;
 }
 
 function setDeviationScale(value) {
@@ -1345,6 +2172,7 @@ function setDeviationScale(value) {
   assessmentModels.forEach((entry) => {
     if (entry.type === "assessment-scanbody" && entry.deviationDistances) colorizeDeviationEntry(entry, maximum);
   });
+  updateDeviationLegendState();
   renderReportModule();
 }
 
@@ -1409,6 +2237,10 @@ function renderRegistrationMatrices() {
     const entries = group.entries.map((entry) => {
       const rows = matrixRows(entry.registrationMatrix);
       const summary = registrationAngles(entry.registrationMatrix);
+      const rmsError = entry.registrationError ?? entry.initialAlignmentError ?? 0;
+      const stageLabel = entry.registrationStage === "initial"
+        ? "INITIAL"
+        : (entry.registrationStage === "plane-refined" ? "PLANE REFINED" : "ICP");
       const matrixValues = rows.flatMap((row, rowIndex) => row.map((value, columnIndex) => (
         `<span class="matrix-value ${columnIndex === 3 && rowIndex < 3 ? "translation" : ""}">${value.toFixed(6)}</span>`
       ))).join("");
@@ -1419,7 +2251,7 @@ function renderRegistrationMatrices() {
               <strong>${escapeHTML(entry.registrationTargetName || entry.name)}</strong>
               <span>${escapeHTML(entry.registrationSourceName || "Library")} → scanbody coordinates</span>
             </div>
-            <span class="matrix-entry-error">RMS ${Number(entry.registrationError || 0).toFixed(4)} mm</span>
+            <span class="matrix-entry-error">${stageLabel} RMS ${Number(rmsError).toFixed(4)} mm</span>
           </div>
           <div class="matrix-grid" aria-label="4 by 4 transformation matrix">${matrixValues}</div>
           <div class="matrix-summary">
@@ -1472,9 +2304,11 @@ function registrationExportData() {
       });
     }
     const summary = registrationAngles(entry.registrationMatrix);
+    const rmsError = entry.registrationError ?? entry.initialAlignmentError ?? 0;
     groups.get(groupId).scanbodies.push({
       scanbody_name: entry.registrationTargetName || entry.name,
       library_name: entry.registrationSourceName || "Library",
+      registration_stage: entry.registrationStage || null,
       matrix_4x4_row_major: matrixRows(entry.registrationMatrix),
       icp_matrix_4x4_row_major: entry.icpRegistrationMatrix
         ? matrixRows(entry.icpRegistrationMatrix)
@@ -1490,7 +2324,7 @@ function registrationExportData() {
         y: summary.rotation.y,
         z: summary.rotation.z,
       },
-      rms_error_mm: Number(entry.registrationError || 0),
+      rms_error_mm: Number(rmsError),
     });
   });
 
@@ -1722,6 +2556,92 @@ function reportBoxPlotSvg(stats, scaleMax) {
     </svg>`;
 }
 
+function reportGroupComparisonAnalysis(groups, scaleMax) {
+  const sortedByMean = groups.slice().sort((first, second) => first.stats.mean - second.stats.mean);
+  const sortedByRms = groups.slice().sort((first, second) => first.stats.rms - second.stats.rms);
+  const sortedByIqr = groups.slice().sort((first, second) => (
+    (first.stats.q3 - first.stats.q1) - (second.stats.q3 - second.stats.q1)
+  ));
+  const bestMean = sortedByMean[0];
+  const highestMean = sortedByMean[sortedByMean.length - 1];
+  const bestRms = sortedByRms[0];
+  const tightest = sortedByIqr[0];
+  const comparisonCards = groups.length > 1 ? [
+    ["Lowest mean", `${bestMean.name} · ${formatMicrometers(bestMean.stats.mean)}`],
+    ["Highest mean", `${highestMean.name} · ${formatMicrometers(highestMean.stats.mean)}`],
+    ["Mean gap", formatMicrometers(highestMean.stats.mean - bestMean.stats.mean)],
+    ["Lowest RMS", `${bestRms.name} · ${formatMicrometers(bestRms.stats.rms)}`],
+    ["Tightest IQR", `${tightest.name} · ${formatMicrometers(tightest.stats.q3 - tightest.stats.q1)}`],
+  ] : [
+    ["Group", bestMean.name],
+    ["Mean", formatMicrometers(bestMean.stats.mean)],
+    ["RMS", formatMicrometers(bestMean.stats.rms)],
+    ["IQR", formatMicrometers(bestMean.stats.q3 - bestMean.stats.q1)],
+    ["Max", formatMicrometers(bestMean.stats.max)],
+  ];
+  const rows = groups.map((group) => `
+    <tr>
+      <td><span class="report-group-dot" style="background:${group.color};box-shadow:0 0 10px ${group.color}66"></span>${escapeHTML(group.name)}</td>
+      <td>${group.scans.length.toLocaleString()}</td>
+      <td>${group.stats.count.toLocaleString()}</td>
+      <td>${formatMicrometers(group.stats.mean)}</td>
+      <td>${formatMicrometers(group.stats.median)}</td>
+      <td>${formatMicrometers(group.stats.sd)}</td>
+      <td>${formatMicrometers(group.stats.rms)}</td>
+      <td>${formatMicrometers(group.stats.q3 - group.stats.q1)}</td>
+      <td>${formatMicrometers(group.stats.max)}</td>
+    </tr>
+  `).join("");
+  const plots = groups.map((group) => `
+    <article class="report-plot report-comparison-plot">
+      <div>
+        <strong>${escapeHTML(group.name)}</strong>
+        <span>${group.scans.length.toLocaleString()} aligned scans · ${group.stats.count.toLocaleString()} scanbody distances</span>
+      </div>
+      ${reportBoxPlotSvg(group.stats, scaleMax)}
+    </article>
+  `).join("");
+
+  return `
+    <section class="report-analysis">
+      <header class="report-analysis-header">
+        <div>
+          <span>GROUP COMPARISON</span>
+          <h3>Test Group Statistics</h3>
+        </div>
+        <p>Lower origin-distance values indicate closer agreement to matched reference scanbody origins.</p>
+      </header>
+      <div class="report-analysis-cards">
+        ${comparisonCards.map(([label, value]) => `
+          <div class="report-analysis-card">
+            <span>${escapeHTML(label)}</span>
+            <strong>${escapeHTML(String(value))}</strong>
+          </div>
+        `).join("")}
+      </div>
+      <div class="report-table-wrap report-comparison-table-wrap">
+        <table class="report-table report-comparison-table">
+          <thead>
+            <tr>
+              <th>Test group</th>
+              <th>Scans</th>
+              <th>Distances</th>
+              <th>Mean</th>
+              <th>Median</th>
+              <th>SD</th>
+              <th>RMS</th>
+              <th>IQR</th>
+              <th>Max</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="report-plots report-comparison-plots">${plots}</div>
+    </section>
+  `;
+}
+
 function renderReportModule() {
   const groups = collectAssessmentReportData();
   if (!groups.length) {
@@ -1753,7 +2673,8 @@ function renderReportModule() {
     </div>
   `).join("");
 
-  reportContent.innerHTML = groups.map((group) => {
+  const analysisHtml = reportGroupComparisonAnalysis(groups, scaleMax);
+  const groupHtml = groups.map((group) => {
     const rows = group.scans.map((scan) => `
       <tr>
         <td>${escapeHTML(scan.name)}</td>
@@ -1820,13 +2741,15 @@ function renderReportModule() {
         <div class="report-plots">${combinedPlot}${plots}</div>
       </section>`;
   }).join("");
+  reportContent.innerHTML = analysisHtml + groupHtml;
 }
 
 function applyDeviationMap(scanEntry, libraryGeometry, registrationMatrix) {
   const registeredPoints = sampleGeometryPoints(libraryGeometry, 5000)
     .map((point) => point.applyMatrix4(registrationMatrix));
   const tree = buildKdTree(registeredPoints);
-  const position = scanEntry.mesh.geometry.getAttribute("position");
+  const displayGeometry = prepareDeviationDisplayGeometry(scanEntry);
+  const position = displayGeometry.getAttribute("position");
   const distances = [];
   for (let index = 0; index < position.count; index += 1) {
     const point = new THREE.Vector3(position.getX(index), position.getY(index), position.getZ(index));
@@ -2067,7 +2990,6 @@ function renameScanbodySequenceForGroup(library, groupId) {
     .filter((entry) => (
       entry.type === "registered"
       && entry.groupId === groupId
-      && entry.planeRefinementCompleted
       && entry.registrationMatrix
       && entry.registrationFor
     ));
@@ -2097,7 +3019,7 @@ function renameScanbodySequenceForGroup(library, groupId) {
   return { renamed: orderedRecords.length, ambiguous: records.length < 3 };
 }
 
-function renamePlaneRefinedScanbodySequences(library, groupIds) {
+function renameRegisteredScanbodySequences(library, groupIds) {
   let renamed = 0;
   let ambiguous = 0;
   [...new Set(groupIds)].forEach((groupId) => {
@@ -2119,9 +3041,12 @@ async function isolateScanbodies() {
 
   try {
     let isolatedTotal = 0;
+    let removedSmallTotal = 0;
     sourceScans.forEach((source) => {
       const connectedComponents = isolateGeometry(source.mesh.geometry);
-      const components = groupNearbyComponents(connectedComponents, 5);
+      const mergedComponents = groupNearbyComponents(connectedComponents, 2);
+      const { kept: components, removed: removedSmall } = filterSmallComponents(mergedComponents, 3);
+      removedSmallTotal += removedSmall;
       const groupId = `group-${source.id}`;
       const sourceVisible = source.mesh.visible;
       const sourceName = source.name;
@@ -2143,9 +3068,13 @@ async function isolateScanbodies() {
       isolatedTotal += components.length;
     });
     updateSceneReference();
+    invalidateFeatureDetection();
     updateUI();
     fitView();
-    showToast(`Created ${isolatedTotal} isolated scanbody object${isolatedTotal === 1 ? "" : "s"}.`);
+    const removedNote = removedSmallTotal
+      ? ` Removed ${removedSmallTotal} object${removedSmallTotal === 1 ? "" : "s"} under 3 mm.`
+      : "";
+    showToast(`Created ${isolatedTotal} isolated scanbody object${isolatedTotal === 1 ? "" : "s"}.${removedNote}`);
   } catch (error) {
     console.error("Could not isolate scanbodies:", error);
     showToast(`Scanbody isolation failed: ${error.message}`, "error");
@@ -2155,21 +3084,108 @@ async function isolateScanbodies() {
   }
 }
 
+async function detectFeatures() {
+  const library = [...models.values()].find((entry) => entry.type === "library");
+  const scanbodies = [...models.values()].filter((entry) => entry.type === "scan" && entry.isolated);
+  if (!library || !scanbodies.length) return;
+
+  loading.hidden = false;
+  loading.querySelector("p").textContent = "Detecting flat planes…";
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  try {
+    const targets = [library, ...scanbodies];
+    let planeCount = 0;
+    for (let index = 0; index < targets.length; index += 1) {
+      const entry = targets[index];
+      loading.querySelector("p").textContent = `Feature detect ${index + 1} of ${targets.length}…`;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      planeCount += applyFeaturePlanes(entry);
+    }
+    updateUI();
+    showToast(`Flat planes detected on ${targets.length} object${targets.length === 1 ? "" : "s"} (${formatNumber(planeCount)} planes).`);
+  } catch (error) {
+    console.error("Feature detection failed:", error);
+    showToast(`Feature detection failed: ${error.message}`, "error");
+  } finally {
+    loading.hidden = true;
+    loading.querySelector("p").textContent = "Processing geometry…";
+  }
+}
+
+async function cropScanbodies() {
+  const scanbodies = [...models.values()].filter((entry) => (
+    entry.type === "scan"
+    && entry.isolated
+    && !entry.registered
+    && entry.featurePlanes?.topRing
+  ));
+  if (!scanbodies.length) return;
+
+  loading.hidden = false;
+  loading.querySelector("p").textContent = "Cropping scanbodies…";
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  let croppedTotal = 0;
+  try {
+    for (let index = 0; index < scanbodies.length; index += 1) {
+      const entry = scanbodies[index];
+      loading.querySelector("p").textContent = `Crop SBs ${index + 1} of ${scanbodies.length}…`;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const croppedGeometry = cropGeometryToTopRingDistance(
+        entry.deviationBaseGeometry || entry.mesh.geometry,
+        entry.featurePlanes.topRing,
+        SCANBODY_CROP_TOP_RING_DISTANCE,
+      );
+      if (!croppedGeometry) continue;
+      replaceEntryGeometry(entry, croppedGeometry);
+      croppedTotal += 1;
+    }
+
+    if (!croppedTotal) {
+      updateUI();
+      showToast("No scanbody geometry was farther than 4.6 mm from the detected top ring.");
+      return;
+    }
+
+    updateSceneReference();
+    updateUI();
+    fitView();
+    showToast(`Cropped ${croppedTotal} scanbody object${croppedTotal === 1 ? "" : "s"} to 4.6 mm from the top ring. Running Feature Detect again…`);
+  } catch (error) {
+    console.error("Could not crop scanbodies:", error);
+    showToast(`Crop SBs failed: ${error.message}`, "error");
+    return;
+  } finally {
+    loading.hidden = true;
+    loading.querySelector("p").textContent = "Processing geometry…";
+  }
+
+  await detectFeatures();
+}
+
 async function registerIsolatedScanbodies() {
   const library = [...models.values()].find((entry) => entry.type === "library");
   const scanbodies = [...models.values()].filter((entry) => entry.type === "scan" && entry.isolated && !entry.registered);
   if (!library || !scanbodies.length) return;
+  if (![library, ...scanbodies].every((entry) => hasRequiredAlignmentFeatures(entry))) {
+    showToast("Run Feature Detect again; long axis, top ring, and side face are required.", "error");
+    updateUI();
+    return;
+  }
 
   loading.hidden = false;
   loading.querySelector("p").textContent = "Preparing initial alignments…";
   await new Promise((resolve) => setTimeout(resolve, 30));
 
   try {
+    const alignedGroupIds = new Set();
     for (let index = 0; index < scanbodies.length; index += 1) {
       const scanbody = scanbodies[index];
       loading.querySelector("p").textContent = `Initial alignment ${index + 1} of ${scanbodies.length}…`;
       await new Promise((resolve) => setTimeout(resolve, 10));
-      const preparation = prepareRegistration(library.mesh.geometry, scanbody.mesh.geometry);
+      clearAlignmentMarker(scanbody);
+      const preparation = prepareFeatureRegistration(library, scanbody);
       const registeredCopy = addModelFromGeometry({
         geometry: library.mesh.geometry.clone(),
         id: `registered-${scanbody.id}`,
@@ -2185,6 +3201,7 @@ async function registerIsolatedScanbodies() {
       registeredCopy.mesh.material.depthWrite = false;
       registeredCopy.registrationStage = "initial";
       registeredCopy.initialAlignmentError = preparation.preview.error;
+      registeredCopy.registrationMatrix = preparation.preview.matrix.clone();
       registeredCopy.registrationPreparation = preparation;
       registeredCopy.registrationFor = scanbody.id;
       registeredCopy.registrationTargetName = scanbody.name;
@@ -2192,12 +3209,22 @@ async function registerIsolatedScanbodies() {
       const initialTypeLabel = registeredCopy.objectRow?.querySelector(".object-type");
       if (initialTypeLabel) initialTypeLabel.textContent = "INITIAL ALIGNMENT · REVIEW BEFORE ICP";
       scanbody.registered = true;
+      if (preparation.preview.targetRingPlane) addTopRingMarker(scanbody, preparation.preview.targetRingPlane);
       applyDeviationMap(scanbody, library.mesh.geometry, preparation.preview.matrix);
       updateGroupState(scanbody.groupId);
+      alignedGroupIds.add(scanbody.groupId);
     }
+    const renameResult = renameRegisteredScanbodySequences(library, alignedGroupIds);
     setDeviationScale(0.5);
     updateUI();
-    showToast(`Initial alignment prepared for ${scanbodies.length} scanbod${scanbodies.length === 1 ? "y" : "ies"}. Review the result, then run Step 2.`);
+    if (!registrationMatrixWindow.hidden) renderRegistrationMatrices();
+    const renameMessage = renameResult.renamed
+      ? ` Renamed ${renameResult.renamed} scanbod${renameResult.renamed === 1 ? "y" : "ies"} by arch sequence.`
+      : "";
+    const ambiguityMessage = renameResult.ambiguous
+      ? ` ${renameResult.ambiguous} group${renameResult.ambiguous === 1 ? " was" : "s were"} too small for orientation-based SB1 detection.`
+      : "";
+    showToast(`Initial alignment prepared for ${scanbodies.length} scanbod${scanbodies.length === 1 ? "y" : "ies"}.${renameMessage}${ambiguityMessage} Review the result, then run Step 2.`);
   } catch (error) {
     console.error("Initial alignment failed:", error);
     showToast(`Initial alignment failed: ${error.message}`, "error");
@@ -2245,6 +3272,7 @@ async function refineInitialRegistrations() {
     }
     setDeviationScale(0.5);
     updateUI();
+    if (!registrationMatrixWindow.hidden) renderRegistrationMatrices();
     showToast(`ICP refinement and deviation maps completed for ${preparedCopies.length} scanbod${preparedCopies.length === 1 ? "y" : "ies"}.`);
   } catch (error) {
     console.error("ICP refinement failed:", error);
@@ -2315,9 +3343,10 @@ async function refineRegistrationPlanes() {
       updateGroupState(scanbody.groupId);
       refinedGroupIds.add(scanbody.groupId);
     }
-    const renameResult = renamePlaneRefinedScanbodySequences(library, refinedGroupIds);
+    const renameResult = renameRegisteredScanbodySequences(library, refinedGroupIds);
     setDeviationScale(0.5);
     updateUI();
+    if (!registrationMatrixWindow.hidden) renderRegistrationMatrices();
     const renameMessage = renameResult.renamed
       ? ` Renamed ${renameResult.renamed} scanbod${renameResult.renamed === 1 ? "y" : "ies"} by arch sequence.`
       : "";
@@ -2364,11 +3393,8 @@ async function uploadFiles(fileCollection, type) {
         .filter((entry) => entry.type === "scan" && entry.registered)
         .forEach((entry) => {
           entry.registered = false;
-          delete entry.deviationDistances;
-          entry.mesh.geometry.deleteAttribute("color");
-          entry.mesh.material.vertexColors = false;
-          entry.mesh.material.color.set(TYPE_CONFIG.scan.color);
-          entry.mesh.material.needsUpdate = true;
+          clearDeviationMap(entry, TYPE_CONFIG.scan.color);
+          clearAlignmentMarker(entry);
         });
       const existingLibrary = [...models.values()].find((entry) => entry.type === "library");
       if (existingLibrary) removeModel(existingLibrary.id, false);
@@ -2384,6 +3410,7 @@ async function uploadFiles(fileCollection, type) {
     }
 
     (payload.rejected || []).forEach((item) => showToast(`${item.name}: ${item.reason}`, "error"));
+    if (payload.files?.length) invalidateFeatureDetection();
     updateSceneReference();
     updateUI();
     if (payload.files?.length) fitView();
@@ -2692,7 +3719,8 @@ function runAssessmentInitialAlignment() {
 function applyAssessmentDeviationMap(entry, targetPoints) {
   entry.mesh.updateMatrixWorld(true);
   const targetTree = buildKdTree(targetPoints);
-  const position = entry.mesh.geometry.getAttribute("position");
+  const displayGeometry = prepareDeviationDisplayGeometry(entry);
+  const position = displayGeometry.getAttribute("position");
   const distances = [];
   for (let index = 0; index < position.count; index += 1) {
     const point = new THREE.Vector3(position.getX(index), position.getY(index), position.getZ(index))
@@ -2764,7 +3792,7 @@ function runAssessmentRefinedAlignment() {
     rebuildAssessmentScene({ refitView: false });
     refreshAssessmentAlignmentReportData();
     applyAssessmentRefinedDeviationMaps();
-    deviationLegend.hidden = false;
+    updateDeviationLegendState();
     assessmentRegistrationStatus.textContent =
       `${refinements.length} test scan${refinements.length === 1 ? "" : "s"} refined with surface ICP`;
     assessmentRegistrationStatus.classList.add("complete");
@@ -2793,6 +3821,7 @@ function initializeAssessmentDataGroups() {
     id: "test-group-1",
     type: "test",
     name: "Group 1",
+    nameEdited: false,
     color: ASSESSMENT_GROUP_COLORS[0],
     files: [],
     collapsed: false,
@@ -2806,6 +3835,7 @@ function createAssessmentTestGroup() {
     id: `test-group-${number}`,
     type: "test",
     name: `Group ${number}`,
+    nameEdited: false,
     color: ASSESSMENT_GROUP_COLORS[(number - 1) % ASSESSMENT_GROUP_COLORS.length],
     files: [],
     collapsed: false,
@@ -2825,6 +3855,10 @@ function assessmentFileSummary(fileRecord) {
   return `${fileRecord.scans.length} scans · ${bodyCount} scanbodies`;
 }
 
+function assessmentGroupNameFromFile(fileName) {
+  return fileName.replace(/\.json$/i, "").trim() || fileName;
+}
+
 function setAssessmentDataGroupColor(groupId, colorValue) {
   const dataset = assessmentDataGroups.get(groupId);
   if (!dataset || !/^#[0-9a-f]{6}$/i.test(colorValue)) return;
@@ -2840,10 +3874,7 @@ function setAssessmentDataGroupColor(groupId, colorValue) {
         entry.color = color.clone();
         entry.mesh.material.color.copy(color);
         entry.mesh.material.needsUpdate = true;
-        if (entry.originSphere) {
-          entry.originSphere.material.color.copy(color);
-          entry.originSphere.material.needsUpdate = true;
-        }
+        setLocalOriginMarkerColor(entry, color);
       });
     });
   renderAssessmentObjects();
@@ -2888,6 +3919,7 @@ function bindAssessmentDataGroupControls(root) {
       const group = assessmentDataGroups.get(input.dataset.testGroupName);
       if (!group) return;
       group.name = input.value.trim() || `Group ${input.dataset.testGroupName.split("-").pop()}`;
+      group.nameEdited = true;
       input.value = group.name;
       renderAssessmentObjects();
     });
@@ -2954,7 +3986,7 @@ function renderAssessmentDataGroups() {
 function disposeAssessmentEntry(entry) {
   assessmentGroup.remove(entry.mesh);
   disposeLocalOriginAxes(entry);
-  entry.mesh.geometry.dispose();
+  disposeEntryGeometry(entry);
   entry.mesh.material.dispose();
 }
 
@@ -3238,6 +4270,8 @@ async function importAssessmentJsonFiles(groupId, fileList) {
   const group = assessmentDataGroups.get(groupId);
   if (!group || !fileList?.length) return;
   if (group.type === "reference") clearAssessmentRegistrations();
+  const shouldAutoNameGroup = group.type === "test" && !group.nameEdited && group.files.length === 0;
+  let autoName = null;
   for (const file of [...fileList]) {
     if (!file.name.toLowerCase().endsWith(".json")) {
       showToast(`${file.name} is not a JSON file.`, "error");
@@ -3249,6 +4283,7 @@ async function importAssessmentJsonFiles(groupId, fileList) {
       scans.forEach((scan) => scan.scanbodies.forEach((scanbody) => {
         assessmentMatrixFromRows(scanbody.matrix_4x4_row_major);
       }));
+      if (shouldAutoNameGroup && !autoName) autoName = assessmentGroupNameFromFile(file.name);
       group.files.push({
         id: `${group.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name: file.name,
@@ -3259,6 +4294,7 @@ async function importAssessmentJsonFiles(groupId, fileList) {
       showToast(`${file.name} could not be imported: ${error.message}`, "error");
     }
   }
+  if (autoName) group.name = autoName;
   renderAssessmentDataGroups();
   rebuildAssessmentScene();
 }
@@ -3319,6 +4355,7 @@ function updateAssessmentUI() {
   centerLibraryButton.disabled = !assessmentLibrary;
   showAllObjectsButton.disabled = entries.length === 0 || entries.every((entry) => entry.userVisible);
   hideAllObjectsButton.disabled = entries.length === 0 || entries.every((entry) => !entry.userVisible);
+  updateDeviationLegendState();
   if (visible.length) {
     const box = new THREE.Box3();
     visible.forEach((entry) => box.expandByObject(entry.mesh));
@@ -3458,9 +4495,22 @@ wireframeToggle.addEventListener("change", () => {
 });
 canvas.addEventListener("pointermove", updateObjectHoverLabel);
 canvas.addEventListener("pointerleave", hideObjectHoverLabel);
-canvas.addEventListener("pointerdown", hideObjectHoverLabel);
+canvas.addEventListener("pointerdown", (event) => {
+  centerViewOnMiddleClick(event);
+  hideObjectHoverLabel();
+});
 gridToggle.addEventListener("change", () => { grid.visible = gridToggle.checked; });
+deviationColorMapToggle.addEventListener("change", () => {
+  deviationColorMapVisible = deviationColorMapToggle.checked;
+  applyDeviationColorMapVisibility();
+});
+featureSeedArrowsToggle.addEventListener("change", () => {
+  featureSeedArrowsVisible = featureSeedArrowsToggle.checked;
+  applyFeatureSeedArrowVisibility();
+});
 isolateScanbodiesButton.addEventListener("click", isolateScanbodies);
+featureDetectButton.addEventListener("click", detectFeatures);
+cropScanbodiesButton.addEventListener("click", cropScanbodies);
 registerScanbodiesButton.addEventListener("click", registerIsolatedScanbodies);
 refineRegistrationButton.addEventListener("click", refineInitialRegistrations);
 planeRefinementButton.addEventListener("click", refineRegistrationPlanes);

@@ -502,9 +502,49 @@ button { color: inherit; }
   color: #d6dbd7;
   font: 500 9px/1 ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
+.deviation-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 9px;
+  color: #8c938e;
+  font: 500 8px/1 ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  letter-spacing: .1em;
+  cursor: pointer;
+}
+.deviation-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.deviation-toggle span {
+  width: 28px;
+  height: 16px;
+  position: relative;
+  flex: 0 0 auto;
+  border: 1px solid #3e443f;
+  border-radius: 10px;
+  background: #171917;
+  transition: .2s;
+}
+.deviation-toggle span::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  top: 2px;
+  left: 2px;
+  border-radius: 50%;
+  background: #606661;
+  transition: .2s;
+}
+.deviation-toggle input:checked + span { border-color: #607051; background: rgba(217,255,67,.1); }
+.deviation-toggle input:checked + span::after { transform: translateX(12px); background: var(--acid); }
 .deviation-gradient { height: 8px; margin: 8px 0 6px; background: linear-gradient(90deg, #2457ff, #22d3ee, #42d890, #ffe044, #ff4b38 88%, #d83bff 100%); }
 .deviation-labels { display: flex; justify-content: space-between; color: #717873; font: 500 7px/1 ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace; }
 .deviation-scale-range { width: 100%; margin: 9px 0 0; accent-color: var(--acid); cursor: pointer; }
+.deviation-map-off .deviation-gradient,
+.deviation-map-off .deviation-labels,
+.deviation-map-off .deviation-scale-range,
+.deviation-map-off .deviation-title label {
+  opacity: .36;
+}
 .matrix-window {
   position: fixed;
   inset: 0;
@@ -648,6 +688,49 @@ button { color: inherit; }
 .report-summary-card span { display: block; color: #6f7871; font: 600 8px/1 ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace; letter-spacing: .1em; text-transform: uppercase; }
 .report-summary-card strong { display: block; margin-top: 12px; color: #e7eee9; font-size: 17px; letter-spacing: -.02em; }
 .report-empty { min-height: 260px; display: grid; place-items: center; border: 1px solid #252a26; color: #6e7670; font-size: 12px; background: #141715; }
+.report-analysis {
+  margin-bottom: 16px;
+  border: 1px solid rgba(112,227,159,.36);
+  background: rgba(112,227,159,.035);
+}
+.report-analysis-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 22px;
+  padding: 18px;
+  border-bottom: 1px solid #27302a;
+}
+.report-analysis-header span { color: #70e39f; font: 600 8px/1 ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace; letter-spacing: .12em; }
+.report-analysis-header h3 { margin: 7px 0 0; color: #edf5ef; font-size: 18px; letter-spacing: -.03em; }
+.report-analysis-header p { max-width: 430px; margin: 0; color: #8d958f; font-size: 10px; line-height: 1.5; }
+.report-analysis-cards {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1px;
+  background: #27302a;
+  border-bottom: 1px solid #27302a;
+}
+.report-analysis-card {
+  min-height: 70px;
+  padding: 13px;
+  background: #121614;
+}
+.report-analysis-card span { display: block; color: #7b8580; font: 600 8px/1 ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace; letter-spacing: .1em; text-transform: uppercase; }
+.report-analysis-card strong { display: block; margin-top: 11px; color: #e5eee8; font-size: 13px; line-height: 1.35; }
+.report-comparison-table-wrap { padding-top: 14px; }
+.report-comparison-table th:first-child,
+.report-comparison-table td:first-child { text-align: left; }
+.report-comparison-table th:nth-child(2),
+.report-comparison-table td:nth-child(2) { text-align: right; }
+.report-group-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.report-comparison-plots { padding-top: 0; }
 .report-group {
   border: 1px solid #2b312d;
   background: #141715;
@@ -755,6 +838,8 @@ button { color: inherit; }
   .report-panel { padding: 16px; }
   .report-panel-header { align-items: flex-start; flex-direction: column; }
   .report-summary-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-analysis-header { flex-direction: column; }
+  .report-analysis-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .report-group-header { flex-direction: column; }
   .report-group-stats { justify-content: flex-start; }
   .report-plot { grid-template-columns: 1fr; }

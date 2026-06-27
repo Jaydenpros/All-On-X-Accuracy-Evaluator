@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Load and inspect multiple STL models in an interactive 3D workspace." />
     <title>OnXTrue — STL Viewer</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='35') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='37') }}" />
     <script type="importmap">
       {
         "imports": {
@@ -238,9 +238,17 @@
                 </div>
                 <div id="assessment-registration-status" class="assessment-registration-status">Add a reference scan and at least one test scan</div>
               </div>
-              <button id="isolate-scanbodies" class="tool-button isolate-button data-processing-control" type="button" disabled title="Separate scanbodies and combine mesh pieces within 5 mm">
+              <button id="isolate-scanbodies" class="tool-button isolate-button data-processing-control" type="button" disabled title="Separate scanbodies and combine mesh pieces within 2 mm">
                 <svg viewBox="0 0 24 24"><path d="M8 8h8v8H8zM3 3h3v3H3zM18 3h3v3h-3zM3 18h3v3H3zM18 18h3v3h-3zM6 6l2 2m10-2-2 2M6 18l2-2m10 2-2-2"/></svg>
                 Isolate Scanbodies
+              </button>
+              <button id="feature-detect" class="tool-button isolate-button data-processing-control" type="button" disabled title="Detect flat planes on the library and isolated scanbodies">
+                <svg viewBox="0 0 24 24"><path d="M4 18 9 6l5 12 3-8 3 8M4 18h16"/></svg>
+                Feature Detect
+              </button>
+              <button id="crop-scanbodies" class="tool-button isolate-button data-processing-control" type="button" disabled title="Crop isolated scanbodies to within 4.6 mm of the detected top ring, then run Feature Detect again">
+                <svg viewBox="0 0 24 24"><path d="M6 3v15h15M6 14l5-5m3-3 4-4M14 6h4v4"/></svg>
+                Crop SBs
               </button>
               <button id="register-scanbodies" class="tool-button register-button data-processing-control" type="button" disabled title="Run surface and principal-axis initial alignment">
                 <svg viewBox="0 0 24 24"><path d="M7 7h10v10H7zM3 12h4m10 0h4M12 3v4m0 10v4"/><circle cx="12" cy="12" r="2"/></svg>
@@ -269,6 +277,11 @@
                 <input id="grid-toggle" type="checkbox" checked />
                 <span></span>
                 GRID
+              </label>
+              <label class="toggle-control data-processing-control">
+                <input id="feature-seed-arrows-toggle" type="checkbox" />
+                <span></span>
+                SEED ARROWS
               </label>
             </div>
           </div>
@@ -320,6 +333,11 @@
                 <span>DEVIATION SCALE</span>
                 <label><input id="deviation-scale-number" type="number" min="0.05" max="100" step="0.05" value="0.50" /> mm</label>
               </div>
+              <label class="deviation-toggle">
+                <input id="deviation-color-map-toggle" type="checkbox" checked />
+                <span></span>
+                COLOR MAP
+              </label>
               <div class="deviation-gradient"></div>
               <div class="deviation-labels"><span>0 mm</span><span id="deviation-max">0.50 mm+</span></div>
               <input id="deviation-scale-range" class="deviation-scale-range" type="range" min="0.05" max="5" step="0.05" value="0.5" aria-label="Maximum deviation scale in millimeters" />
@@ -398,6 +416,6 @@
       </div>
     </div>
 
-    <script type="module" src="{{ url_for('static', filename='app.js', v='51') }}"></script>
+    <script type="module" src="{{ url_for('static', filename='app.js', v='93') }}"></script>
   </body>
 </html>

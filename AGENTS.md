@@ -102,15 +102,18 @@ If changing `static/app.js` or `static/styles.css`, bump the matching `v=` query
   - `#object-hover-label`
   - `#fit-view`, `#reset-view`, `#center-library`
   - `#isolate-scanbodies`
+  - `#feature-detect`
+  - `#crop-scanbodies`
   - `#register-scanbodies`
   - `#refine-registration`
   - `#plane-refinement`
   - `#show-registration-matrices`
+  - `#deviation-color-map-toggle`
   - `#initial-assessment-alignment` labeled `1 Initial Alignment`
   - `#refined-assessment-alignment` labeled `2 Refined Alignment`
   - `#show-assessment-alignment-report`
   - `#assessment-registration-status`
-  - `#wireframe-toggle`, `#grid-toggle`
+  - `#wireframe-toggle`, `#grid-toggle`, `#feature-seed-arrows-toggle`
   - `#objects-panel`, `#data-objects-list`, `#assessment-objects-list`
   - `#deviation-legend`
   - `#registration-matrix-window`
@@ -170,23 +173,25 @@ Scene/UI:
 Scanbody isolation:
 
 - `isolateGeometry()` splits connected triangle components.
-- `groupNearbyComponents(..., distance = 5)` merges components within 5 mm.
+- `groupNearbyComponents(..., distance = 2)` merges components within 2 mm.
+- `filterSmallComponents(..., minimumDimension = 3)` removes merged components whose largest bounding-box dimension is under 3 mm.
 - `mergeGeometries()` combines grouped components.
 - `isolateScanbodies()` replaces full-arch scans with isolated `SB1`, `SB2`, etc. children.
+- `cropScanbodies()` crops isolated scanbodies to triangles within 4.6 mm of the detected top-ring plane, then runs Feature Detect again.
 
 Registration/deviation:
 
 - `sampleGeometryPoints()`, `buildKdTree()`, `nearestPoint()`
 - `bestRigidTransform()` computes rigid transform from paired points.
-- `detectPlanarPatches()`, `dominantPerpendicularPair()`, `planeAlignedInitialMatrices()`
-- `prepareRegistration()` creates multi-start initial candidates.
+- `detectPlanarPatches()`, `classifyFeaturePlanes()`, `planePatchShapeMetrics()`
+- `prepareFeatureRegistration()` creates initial candidates from detected long axis, top-ring plane, and side plane only.
 - `refineRegistration()` runs ICP.
 - `registerIsolatedScanbodies()` creates initial registered library copies.
 - `refineInitialRegistrations()` runs ICP and deviation mapping.
 - `planeRefinementMatrix()` / `refineRegistrationPlanes()` perform top/side plane refinement.
-- After plane refinement, `renamePlaneRefinedScanbodySequences()` renames isolated scanbodies as `FullArch_SB1.stl`, `FullArch_SB2.stl`, etc. using virtual arch sequencing from registered library-copy positions/orientations; it does not move meshes or change matrices.
-- `colorizeDeviationEntry()`, `setDeviationScale()`, `applyDeviationMap()` handle deviation colors.
-- `renderRegistrationMatrices()`, `exportRegistrationMatrices()` handle matrix modal/export.
+- After initial alignment and again after plane refinement, `renameRegisteredScanbodySequences()` renames isolated scanbodies as `FullArch_SB1.stl`, `FullArch_SB2.stl`, etc. using virtual arch sequencing from registered library-copy positions/orientations; it does not move meshes or change matrices.
+- `colorizeDeviationEntry()`, `setDeviationScale()`, `applyDeviationMap()`, `applyDeviationColorMapVisibility()` handle deviation colors and the color-map display toggle.
+- `renderRegistrationMatrices()`, `registrationExportData()`, `exportRegistrationMatrices()` handle matrix modal/export from initial, ICP, and plane-refined stages; the open modal refreshes after each stage.
 
 Accuracy Assessment:
 
@@ -195,6 +200,7 @@ Accuracy Assessment:
 - `initializeAssessmentDataGroups()` creates reference + first test group.
 - `importAssessmentLibrary()` imports the library STL.
 - `importAssessmentJsonFiles()` imports reference/test JSON files.
+- Test groups auto-name from the first imported JSON filename until the user manually edits the group name.
 - `rebuildAssessmentScene()` clones the assessment library for each scanbody matrix.
 - `setAssessmentDataGroupColor()` updates reference/test colors.
 
@@ -212,14 +218,14 @@ Accuracy Assessment alignment:
 Report module:
 
 - `collectAssessmentReportData()` groups Alignment Report scanbody distances by test group and scan.
-- `renderReportModule()` renders descriptive statistics tables and SVG box plots in `#report-panel`.
+- `renderReportModule()` renders a lead test-group comparison analysis, descriptive statistics tables, and SVG box plots in `#report-panel`.
 - Report data comes from `scan.assessmentRegistration.scanbodyDistances`, so it refreshes after every initial or refined alignment.
 - The whole full-arch test scan moves rigidly; inter-scanbody relationships inside that scan must not change.
 - Registrations are cleared if reference data changes.
 
 ## Local origin markers
 
-Small local XYZ axes and 0.1 mm origin spheres are attached to library-derived meshes:
+Small local XYZ axes and 0.1 mm origin spheres are attached to library-derived meshes. The marker axes and sphere use the entry/group color rather than fixed XYZ colors:
 
 - `LIBRARY_ORIGIN_TYPES`
 - `addLocalOriginAxes(entry)`

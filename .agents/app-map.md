@@ -93,6 +93,7 @@ All UI is in `templates/index.html`.
 
 - `#scene-canvas` — Three.js canvas
 - `#object-hover-label` — cursor-following 3D object name tooltip
+- `centerViewOnMiddleClick()` — middle-clicking a visible mesh raycast hit moves `OrbitControls.target` to that clicked 3D point.
 - `#fit-view`, `#reset-view`, `#center-library`
 - `#initial-assessment-alignment` — Accuracy Assessment toolbar action labeled "1 Initial Alignment"
 - `#refined-assessment-alignment` — Accuracy Assessment toolbar action labeled "2 Refined Alignment"; enabled after initial alignment and runs rigid surface ICP
@@ -101,13 +102,15 @@ All UI is in `templates/index.html`.
 - `#assessment-registration-status`
 - `#report-panel`, `#report-summary-cards`, `#report-content` — Report module output
 - `#isolate-scanbodies`
+- `#feature-detect` — required Data Processing step that visualizes rectangular frames plus purple flat-plane borders on the library and isolated scanbodies before Step 1
+- `#crop-scanbodies` — crops isolated scanbodies to within 4.6 mm of the detected top ring, then reruns Feature Detect
 - `#register-scanbodies` — Step 1 initial alignment
 - `#refine-registration` — Step 2 ICP and deviation
 - `#plane-refinement` — Step 3 plane refinement
 - `#show-registration-matrices`
-- `#wireframe-toggle`, `#grid-toggle`
+- `#wireframe-toggle`, `#grid-toggle`, `#feature-seed-arrows-toggle`
 - `#objects-panel`, `#data-objects-list`, `#assessment-objects-list`
-- `#deviation-legend`
+- `#deviation-legend`, `#deviation-color-map-toggle`
 - `#registration-matrix-window`
 
 ### Stats and feedback
@@ -261,36 +264,43 @@ Supporting geometry functions:
 - `componentsAreClose()`
 - `mergeGeometries()`
 - `groupNearbyComponents()`
+- `filterSmallComponents()` — after 2 mm island merging, discards merged components whose largest bounding-box dimension is under 3 mm.
+- `cropGeometryToTopRingDistance()` / `cropScanbodies()` — keep triangles whose centers are within 4.6 mm of the detected top-ring plane; after cropping, Feature Detect runs again on the library and isolated scanbodies.
 
 Isolated scanbodies are grouped with `createScanGroup()` and tracked in `scanGroups`.
 
 ### Registration pipeline
 
-1. `registerIsolatedScanbodies()` — creates a cloned `registered` library for each isolated scanbody and applies an initial matrix.
-2. `refineInitialRegistrations()` — runs ICP, updates the registered copy, and computes deviations.
-3. `refineRegistrationPlanes()` — performs constrained top/side plane refinement.
+1. `detectFeatures()` — builds rectangular frame overlays around the top detected flat planes for the library and isolated scanbodies; Step 1 remains disabled until this has run on the current objects.
+2. `registerIsolatedScanbodies()` — creates a cloned `registered` library for each isolated scanbody and applies an initial matrix.
+3. `refineInitialRegistrations()` — runs ICP, updates the registered copy, and computes deviations.
+4. `refineRegistrationPlanes()` — performs constrained top/side plane refinement.
 
 Core math:
 
 - `sampleGeometryPoints()`
-- `principalAxis()`
 - `bestRigidTransform()`
-- `initialRegistrationMatrices()`
-- `detectPlanarPatches()`
-- `planeAlignedInitialMatrices()`
-- `prepareRegistration()`
+- `classifyFeaturePlanes()` — selects only the target top-ring and square side flat faces from candidate planar patches using the seed-normal long axis.
+- `planeRectangleFrameGeometry()` / `planeBorderGeometry()` — draw principal-axis oriented rectangular frames plus purple borders for the selected top-ring and side-square feature planes.
+- `planarSeedIndices()` / `featureSeedSelection()` / `addPlanarSeedArrows()` — start from 500 area-distributed detector seeds, exclude radial seeds whose normal lines pass within 0.5 mm of the estimated long axis, draw those excluded seeds red, and add 80 extra axis-parallel seeds so top-ring candidate generation remains well represented.
+- `estimateLongAxisFromSeedNormals()` / `addLongAxisLine()` — estimate the scanbody long axis from seed normals and draw a cyan axis line through the mesh center.
+- `detectPlanarPatches()` — accepts an optional active seed index set; Feature Detect uses the filtered active set so excluded red seeds do not create planar candidates.
+- `planePatchShapeMetrics()`
+- `featureAlignmentCandidates()` / `prepareFeatureRegistration()` — Step 1 initial alignment uses the detected long axis, top-ring plane, and side plane already stored by Feature Detect; there are no generic principal-axis or re-detection fallbacks.
 - `refineRegistration()`
 - `refinePreparedRegistration()`
 - `planeRefinementMatrix()`
-- `renamePlaneRefinedScanbodySequences()` — after Step 3, assigns `FullArch_SB1.stl ... SBn.stl` names from virtual arch order using registered library-copy centers and local Z orientation; does not alter mesh positions or registration matrices
+- `renameRegisteredScanbodySequences()` — after Step 1 and again after Step 3, assigns `FullArch_SB1.stl ... SBn.stl` names from virtual arch order using registered library-copy centers and local Z orientation; does not alter mesh positions or registration matrices
 - `setMeshTransform()`
 
 Deviation map:
 
 - `applyDeviationMap()`
+- `prepareDeviationDisplayGeometry()` / `subdivideGeometryForDeviation()` — create a denser visual-only mesh for deviation coloring so coarse STL triangles can show sub-0.5 mm scale changes more accurately.
 - `colorizeDeviationEntry()`
 - `deviationColor()` — values above the selected deviation scale render as bright purple
 - `setDeviationScale()`
+- `applyDeviationColorMapVisibility()` / `setDeviationEntryBaseColor()` — toggle deviation vertex colors on/off without deleting stored deviation distances
 
 Matrix display/export:
 
@@ -298,6 +308,7 @@ Matrix display/export:
 - `registrationExportData()`
 - `exportRegistrationMatrices()`
 - `openRegistrationMatrices()`
+- Matrices are available immediately after Step 1 initial alignment and update in-place if the modal is open during ICP or plane refinement.
 
 Matrix convention: transforms points from original library coordinates into registered scanbody coordinates.
 
@@ -353,6 +364,7 @@ Supporting functions:
 - `runAssessmentRefinedAlignment()`
 - `applyAssessmentRefinedDeviationMaps()`
 - `renderAssessmentAlignmentReport()`
+- `reportGroupComparisonAnalysis()` — lead Report module section comparing test groups with summary ranking cards, a group stats table, and one combined boxplot per group.
 
 ### Report module
 
@@ -406,7 +418,7 @@ Scene/object management:
 
 ### Change registration behavior
 
-Start with the three pipeline entry points, then follow into `prepareRegistration()`, `refinePreparedRegistration()`, or `planeRefinementMatrix()`. Preserve the library-to-scanbody matrix convention.
+Start with the three pipeline entry points, then follow into `prepareFeatureRegistration()`, `refinePreparedRegistration()`, or `planeRefinementMatrix()`. Preserve the library-to-scanbody matrix convention.
 
 ### Change imported transformation JSON
 
