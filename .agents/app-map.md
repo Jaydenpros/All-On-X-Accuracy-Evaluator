@@ -75,6 +75,7 @@ All UI is in `templates/index.html`.
 ### Data Processing sidebar
 
 - `#data-processing-sidebar`
+- `#data-library-color`, `#data-scans-color` — Data Processing display color pickers; Library recolors original and registered library copies; Scans recolors full-arch/isolated scans
 - `#library-input`, `#library-drop-zone`, `#library-list`
 - `#scans-input`, `#scans-drop-zone`, `#scans-list`
 - `#clear-scans`
@@ -95,16 +96,23 @@ All UI is in `templates/index.html`.
 - `#object-hover-label` — cursor-following 3D object name tooltip
 - `centerViewOnMiddleClick()` — middle-clicking a visible mesh raycast hit moves `OrbitControls.target` to that clicked 3D point.
 - `#fit-view`, `#reset-view`, `#center-library`
-- `#initial-assessment-alignment` — Accuracy Assessment toolbar action labeled "1 Initial Alignment"
-- `#refined-assessment-alignment` — Accuracy Assessment toolbar action labeled "2 Refined Alignment"; enabled after initial alignment and runs rigid surface ICP
-- `#show-assessment-alignment-report` — opens the initial-alignment scanbody distance report
+- `#assessment-workflow-toggle` — Accuracy Assessment segmented control labeled Trueness / Precision
+- `#assessment-kabsch-mode` — Trueness Kabsch mode selector (`Origins only (current)` or `Origins · RMS-weighted`)
+- `#assessment-kabsch-weighting` — RMS weighting selector for weighted-origin Kabsch (`Inverse-variance`, `Inverse`, or `Off`)
+- `#initial-assessment-alignment` — Accuracy Assessment toolbar action labeled "Kabsch Align"
+- `#refined-assessment-alignment` — Accuracy Assessment toolbar action labeled "ICP Align"; enabled after Kabsch alignment and runs rigid surface ICP
+- `#show-assessment-alignment-report` — toolbar action labeled "Trueness Report"; opens the scanbody distance report
+- `#precision-measure` — Precision Assessment toolbar action; virtually measures all compatible unordered scan pairs within each test group
+- `#precision-report` — Precision Assessment toolbar action; opens within-group pairwise precision distances
 - `#assessment-alignment-window`, `#assessment-alignment-list` — modal report of post-alignment test SB origin distances to matched reference SB origins
 - `#assessment-registration-status`
+- `#report-mode-toggle` — Report module segmented control for Trueness vs Precision
 - `#report-panel`, `#report-summary-cards`, `#report-content` — Report module output
+- `#reset-data-processing` — restores Data Processing to the last imported library/full-arch scan files and clears derived operations
 - `#isolate-scanbodies`
-- `#feature-detect` — required Data Processing step that visualizes rectangular frames plus purple flat-plane borders on the library and isolated scanbodies before Step 1
-- `#crop-scanbodies` — crops isolated scanbodies to within 4.6 mm of the detected top ring, then reruns Feature Detect
-- `#register-scanbodies` — Step 1 initial alignment
+- `#library-type-toggle` — opens the type-specific workflow panel next to Isolate Scanbodies
+- `#library-type-select` — chooses the active scan body library type strategy (`Straumann SRA NEW` or `Straumann SRA Old`)
+- `#feature-detect`, `#crop-scanbodies`, `#register-scanbodies` — panel actions routed through the selected scan body library strategy
 - `#refine-registration` — Step 2 ICP and deviation
 - `#plane-refinement` — Step 3 plane refinement
 - `#show-registration-matrices`
@@ -265,14 +273,20 @@ Supporting geometry functions:
 - `mergeGeometries()`
 - `groupNearbyComponents()`
 - `filterSmallComponents()` — after 2 mm island merging, discards merged components whose largest bounding-box dimension is under 3 mm.
-- `cropGeometryToTopRingDistance()` / `cropScanbodies()` — keep triangles whose centers are within 4.6 mm of the detected top-ring plane; after cropping, Feature Detect runs again on the library and isolated scanbodies.
+- `dataProcessingImportSnapshots` / `resetDataProcessingOperations()` — retain original imported library/full-arch geometries and rebuild them when Reset is clicked, clearing isolated children, feature overlays, registrations, deviations, and matrices.
+- `SCANBODY_LIBRARY_STRATEGIES` — routes Feature Detect, Crop SBs, and Initial Alignment by selected Data Processing library type.
+- `scanbodyLibraryStrategy()` — returns the active type strategy; current options are `straumann-sra-new` and `straumann-sra-old`.
+- `inferScanbodyLibraryTypeFromName()` — switches the active strategy to `straumann-sra-old` when the library filename contains `Straumann SRA Old`.
+- `classifyFeaturePlanes()` — baseline SRA NEW classifier; selects top ring plus rectangular side face from candidate planar patches using the seed-normal long axis.
+- `applyStraumannSraOldFeaturePlanes()` / `detectStraumannSraOldReferenceFeatures()` — SRA Old axis-first detector; iteratively fits the long axis from wall normals, circle-fits wall centroids for center/radius, orients the axis toward the top cap, detects top plane and hole radius near the height maximum, and detects the angled bevel with RANSAC plus a 0.02 mm planar RMS quality gate.
+- `cropGeometryToTopRingDistance()` / `cropScanbodies()` — currently keep triangles whose centers are within 4.6 mm of each object's detected top-ring plane for both strategies; Crop SBs crops the library plus isolated scanbodies, then Feature Detect runs again on the library and isolated scanbodies.
 
 Isolated scanbodies are grouped with `createScanGroup()` and tracked in `scanGroups`.
 
 ### Registration pipeline
 
-1. `detectFeatures()` — builds rectangular frame overlays around the top detected flat planes for the library and isolated scanbodies; Step 1 remains disabled until this has run on the current objects.
-2. `registerIsolatedScanbodies()` — creates a cloned `registered` library for each isolated scanbody and applies an initial matrix.
+1. `detectFeatures()` — calls the selected library type strategy and builds rectangular frame overlays around the top detected flat planes for the library and isolated scanbodies; Step 1 remains disabled until this has run on the current objects.
+2. `registerIsolatedScanbodies()` — calls the selected library type strategy, creates a cloned `registered` library for each isolated scanbody, and applies an initial matrix.
 3. `refineInitialRegistrations()` — runs ICP, updates the registered copy, and computes deviations.
 4. `refineRegistrationPlanes()` — performs constrained top/side plane refinement.
 
@@ -280,9 +294,8 @@ Core math:
 
 - `sampleGeometryPoints()`
 - `bestRigidTransform()`
-- `classifyFeaturePlanes()` — selects only the target top-ring and square side flat faces from candidate planar patches using the seed-normal long axis.
-- `planeRectangleFrameGeometry()` / `planeBorderGeometry()` — draw principal-axis oriented rectangular frames plus purple borders for the selected top-ring and side-square feature planes.
-- `planarSeedIndices()` / `featureSeedSelection()` / `addPlanarSeedArrows()` — start from 500 area-distributed detector seeds, exclude radial seeds whose normal lines pass within 0.5 mm of the estimated long axis, draw those excluded seeds red, and add 80 extra axis-parallel seeds so top-ring candidate generation remains well represented.
+- `planeRectangleFrameGeometry()` / `planeBorderGeometry()` — draw principal-axis oriented rectangular frames plus purple borders for the selected top-ring and second feature planes.
+- `planarSeedIndices()` / `featureSeedSelection()` / `addPlanarSeedArrows()` — SRA NEW starts from 500 area-distributed detector seeds, excludes radial seeds whose normal lines pass within 0.45 mm of the estimated long axis, draws active seeds green and excluded seeds red, and adds 80 extra axis-parallel seeds so top-ring candidate generation remains well represented. SRA Old uses the same seed-arrow visualization after its axis-first detection but does not use seed-generated plane candidates.
 - `estimateLongAxisFromSeedNormals()` / `addLongAxisLine()` — estimate the scanbody long axis from seed normals and draw a cyan axis line through the mesh center.
 - `detectPlanarPatches()` — accepts an optional active seed index set; Feature Detect uses the filtered active set so excluded red seeds do not create planar candidates.
 - `planePatchShapeMetrics()`
@@ -336,14 +349,17 @@ reference/test JSON input
   -> mesh.applyMatrix4(matrix)
 ```
 
-### Rigid full-arch initial alignment
+### Trueness assessment
 
 Entry point: `runAssessmentInitialAlignment()`
 
 - Every test scan is compared with compatible scans in the reference group.
 - Scanbodies are paired by order only: SB1 to SB1, SB2 to SB2, etc.
-- `assessmentInitialScanAlignment()` uses only the origin position from each ordered scanbody matrix and solves one best-fit rigid 4×4 transform for the entire test scan.
-- `assessmentKabschRigidTransform()` uses a Kabsch-style quaternion/eigen rigid registration solve; origin landmarks are also used to report the resulting RMS fit.
+- `#assessment-kabsch-mode` selects the initial Trueness Kabsch mode: stock origins-only landmarks or the same origin landmarks with optional RMS weighting.
+- `assessmentInitialScanAlignment()` solves one best-fit rigid 4×4 transform for the entire test scan from ordered scanbody origins only.
+- `assessmentOriginKabschCorrespondences()` builds the origin correspondence set and optional per-scanbody weights.
+- `assessmentKabschRigidTransform()` uses a Kabsch-style quaternion/eigen rigid registration solve with optional per-point weights; weighted-origin mode defaults to inverse-variance scanbody weights when RMS values are present.
+- `work/assessment_kabsch_origin_tests.mjs` is the focused regression script for the origin-only weighted Kabsch path.
 - The same transform is pre-multiplied onto every original scanbody matrix in that scan.
 - Internal scanbody-to-scanbody relationships therefore remain unchanged.
 - The selected reference scan, RMS error, match count, and per-scanbody post-alignment origin distances are stored on the normalized scan.
@@ -351,26 +367,47 @@ Entry point: `runAssessmentInitialAlignment()`
 - Refined alignment composes that ICP delta onto the existing scan-level registration matrix, then applies deviation color maps to the test scanbody meshes.
 - `#show-assessment-alignment-report` is enabled after initial alignment and renders `scanbodyDistances`, which are recomputed after every initial or refined alignment and displayed in micrometers.
 
+### Precision assessment
+
+Entry point: `runAssessmentPrecisionMeasure()`
+
+- Precision uses only test groups; it does not compare to the reference group and does not compare across test groups.
+- `assessmentScanPairsForDataset(datasetId)` generates every unordered scan pair inside one test group.
+- Pairs are compatible only when both scans have the same scanbody count.
+- `assessmentPrecisionPairMeasurement(sourceItem, targetItem)` pairs scanbodies by order, computes one virtual Kabsch transform from source SB origins to target SB origins, and measures post-alignment SB origin distances.
+- Results are stored on the test dataset as `dataset.precisionAssessment = { measuredAt, pairs, stats }`.
+- Precision measurement does not assign `scan.assessmentRegistrationMatrix`, does not assign `scan.assessmentRegistration`, does not call `rebuildAssessmentScene()`, and does not mutate mesh positions, colors, visibility, local origin axes, or deviation maps.
+- `renderAssessmentPrecisionReport()` uses the shared `#assessment-alignment-window` modal to display pairwise scanbody distances.
+
 Supporting functions:
 
 - `assessmentScansForDataset()`
+- `assessmentScanPairsForDataset()`
 - `clearAssessmentRegistrations()`
 - `assessmentScanbodyPairs()`
 - `assessmentKabschLargestEigenvector()`
 - `assessmentKabschRigidTransform()`
 - `assessmentInitialScanAlignment()`
+- `assessmentPrecisionPairMeasurement()`
+- `availablePrecisionPairCount()`
+- `precisionMeasuredPairCount()`
 - `assessmentScanSurfacePoints()`
 - `refreshAssessmentAlignmentReportData()`
+- `runAssessmentPrecisionMeasure()`
 - `runAssessmentRefinedAlignment()`
 - `applyAssessmentRefinedDeviationMaps()`
 - `renderAssessmentAlignmentReport()`
+- `renderAssessmentPrecisionReport()`
 - `reportGroupComparisonAnalysis()` — lead Report module section comparing test groups with summary ranking cards, a group stats table, and one combined boxplot per group.
 
 ### Report module
 
-- `collectAssessmentReportData()` gathers `scan.assessmentRegistration.scanbodyDistances` from the Alignment Report data and groups them by test group.
-- `renderReportModule()` renders summary cards, descriptive statistics tables, one combined box plot per test group, and per-scan SVG box plots; stored distances remain in millimeters, but all report-facing distance values display in micrometers with two decimals.
-- Report output is empty until initial or refined alignment has generated Alignment Report distances.
+- `#report-mode-toggle` switches between Trueness and Precision report views.
+- `collectTruenessReportData()` gathers `scan.assessmentRegistration.scanbodyDistances` from Trueness Report data and groups them by test group.
+- `collectPrecisionReportData()` gathers `dataset.precisionAssessment.pairs` and groups pairwise scanbody distances by test group.
+- `renderReportModule()` routes to `renderTruenessReportModule()` or `renderPrecisionReportModule()`.
+- Each report view renders summary cards, descriptive statistics tables, one combined box plot per test group, and per-scan/per-pair SVG box plots; stored distances remain in millimeters, but all report-facing distance values display in micrometers with two decimals.
+- Trueness output is empty until Kabsch or ICP alignment has generated distances. Precision output is empty until Precision Measure has generated pairwise distances.
 
 Group management:
 
@@ -406,8 +443,9 @@ Scene/object management:
 1. Data Processing meshes: `addModelFromGeometry()`.
 2. Accuracy Assessment meshes: `createAssessmentMesh()`.
 3. Per-type defaults: `TYPE_CONFIG`.
-4. Visibility: `setModelVisibility()` or assessment visibility functions.
-5. Disposal: `removeModel()` and `disposeAssessmentEntry()`.
+4. Data Processing library/scan color controls: `setDataProcessingTypeColor()`, `updateEntryColor()`, and `syncDataProcessingColorInputs()`.
+5. Visibility: `setModelVisibility()` or assessment visibility functions.
+6. Disposal: `removeModel()` and `disposeAssessmentEntry()`.
 
 ### Add metadata to every model
 

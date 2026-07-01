@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Load and inspect multiple STL models in an interactive 3D workspace." />
     <title>OnXTrue — STL Viewer</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='37') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v='42') }}" />
     <script type="importmap">
       {
         "imports": {
@@ -50,6 +50,23 @@
             <p class="eyebrow">3D STL VIEWER</p>
             <h1>Inspect form.<br /><em>From every angle.</em></h1>
             <p class="intro-copy">Load a scan body reference and its related full-arch scan files into one aligned 3D workspace.</p>
+          </section>
+
+          <section class="display-color-controls" aria-label="Data processing object colors">
+            <div class="display-color-header">
+              <span>Display Colors</span>
+              <small>LIBRARY / SCANS</small>
+            </div>
+            <div class="display-color-grid">
+              <label class="display-color-field">
+                <span>Library</span>
+                <input id="data-library-color" type="color" value="#ff3b30" aria-label="Library color" />
+              </label>
+              <label class="display-color-field">
+                <span>Scans</span>
+                <input id="data-scans-color" type="color" value="#00ff66" aria-label="Scan color" />
+              </label>
+            </div>
           </section>
 
           <section class="upload-section">
@@ -210,6 +227,10 @@
         <section class="viewport-panel">
           <div id="viewport-toolbar" class="viewport-toolbar">
             <div class="tool-group">
+              <button id="reset-data-processing" class="tool-button data-processing-control reset-workflow-button" type="button" disabled title="Reset operations and restore the last imported library and scan files">
+                <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8.5"/><path d="M3 4v4.5h4.5"/></svg>
+                Reset
+              </button>
               <button id="fit-view" class="tool-button" type="button" title="Fit all models">
                 <svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
                 Fit view
@@ -222,18 +243,47 @@
                 Center Library
               </button>
               <div class="assessment-toolbar-action" hidden>
-                <div class="assessment-alignment-buttons">
-                  <button id="initial-assessment-alignment" class="tool-button assessment-register" type="button" disabled title="Initial rigid alignment using SB-number matched scanbody origins">
+                <div id="assessment-workflow-toggle" class="assessment-workflow-toggle" role="group" aria-label="Accuracy assessment workflow">
+                  <button class="workflow-toggle-button active" type="button" data-assessment-workflow="trueness">Trueness</button>
+                  <button class="workflow-toggle-button" type="button" data-assessment-workflow="precision">Precision</button>
+                </div>
+                <div id="trueness-assessment-actions" class="assessment-alignment-buttons">
+                  <label class="assessment-kabsch-mode" title="Choose how Kabsch Align weights scanbody origins">
+                    <span>Mode</span>
+                    <select id="assessment-kabsch-mode" aria-label="Kabsch alignment mode">
+                      <option value="origin">Origins only (current)</option>
+                      <option value="weighted-origin">Origins · RMS-weighted</option>
+                    </select>
+                  </label>
+                  <label class="assessment-kabsch-mode" title="RMS weighting used by the weighted-origin Kabsch mode">
+                    <span>RMS</span>
+                    <select id="assessment-kabsch-weighting" aria-label="Kabsch RMS weighting">
+                      <option value="invVar">Inverse-variance</option>
+                      <option value="inv">Inverse</option>
+                      <option value="uniform">Off</option>
+                    </select>
+                  </label>
+                  <button id="initial-assessment-alignment" class="tool-button assessment-register" type="button" disabled title="Run selected Kabsch alignment mode">
                     <svg viewBox="0 0 24 24"><path d="M7 7h10v10H7zM3 12h4m10 0h4M12 3v4m0 10v4"/><circle cx="12" cy="12" r="2"/></svg>
-                    1 Initial Alignment
+                    Kabsch Align
                   </button>
                   <button id="refined-assessment-alignment" class="tool-button assessment-register" type="button" disabled title="Refine initially aligned test scans using rigid surface ICP">
                     <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/><circle cx="12" cy="12" r="5"/></svg>
-                    2 Refined Alignment
+                    ICP Align
                   </button>
                   <button id="show-assessment-alignment-report" class="tool-button assessment-report" type="button" disabled title="View test scanbody distances to matched reference scanbodies">
                     <svg viewBox="0 0 24 24"><path d="M5 5h14M5 12h14M5 19h14"/><path d="M8 5v14"/></svg>
-                    Alignment Report
+                    Trueness Report
+                  </button>
+                </div>
+                <div id="precision-assessment-actions" class="assessment-alignment-buttons" hidden>
+                  <button id="precision-measure" class="tool-button assessment-register" type="button" disabled title="Virtually compare all scan pairs within each test group using Kabsch alignment">
+                    <svg viewBox="0 0 24 24"><path d="M6 7h5v5H6zM13 12h5v5h-5zM11 9h3M10 14h3"/><circle cx="6" cy="17" r="1.8"/><circle cx="18" cy="7" r="1.8"/></svg>
+                    Precision Measure
+                  </button>
+                  <button id="precision-report" class="tool-button assessment-report" type="button" disabled title="View within-group pairwise precision distances">
+                    <svg viewBox="0 0 24 24"><path d="M5 19V5m0 14h14"/><path d="M8 15l3-4 3 2 4-6"/></svg>
+                    Precision Report
                   </button>
                 </div>
                 <div id="assessment-registration-status" class="assessment-registration-status">Add a reference scan and at least one test scan</div>
@@ -242,18 +292,36 @@
                 <svg viewBox="0 0 24 24"><path d="M8 8h8v8H8zM3 3h3v3H3zM18 3h3v3h-3zM3 18h3v3H3zM18 18h3v3h-3zM6 6l2 2m10-2-2 2M6 18l2-2m10 2-2-2"/></svg>
                 Isolate Scanbodies
               </button>
-              <button id="feature-detect" class="tool-button isolate-button data-processing-control" type="button" disabled title="Detect flat planes on the library and isolated scanbodies">
-                <svg viewBox="0 0 24 24"><path d="M4 18 9 6l5 12 3-8 3 8M4 18h16"/></svg>
-                Feature Detect
-              </button>
-              <button id="crop-scanbodies" class="tool-button isolate-button data-processing-control" type="button" disabled title="Crop isolated scanbodies to within 4.6 mm of the detected top ring, then run Feature Detect again">
-                <svg viewBox="0 0 24 24"><path d="M6 3v15h15M6 14l5-5m3-3 4-4M14 6h4v4"/></svg>
-                Crop SBs
-              </button>
-              <button id="register-scanbodies" class="tool-button register-button data-processing-control" type="button" disabled title="Run surface and principal-axis initial alignment">
-                <svg viewBox="0 0 24 24"><path d="M7 7h10v10H7zM3 12h4m10 0h4M12 3v4m0 10v4"/><circle cx="12" cy="12" r="2"/></svg>
-                1 Initial Alignment
-              </button>
+              <div id="library-type-workflow" class="library-type-workflow data-processing-control">
+                <button id="library-type-toggle" class="tool-button library-type-button" type="button" aria-expanded="false" title="Choose scan body library type and run type-specific workflow actions">
+                  <svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/><path d="m17 9 3 3-3 3"/></svg>
+                  <span>Library Type</span>
+                  <strong id="library-type-current">Straumann SRA NEW</strong>
+                </button>
+                <div id="library-type-panel" class="library-type-panel" hidden>
+                  <label class="library-type-field">
+                    <span>Scan body type</span>
+                    <select id="library-type-select">
+                      <option value="straumann-sra-new">Straumann SRA NEW</option>
+                      <option value="straumann-sra-old">Straumann SRA Old</option>
+                    </select>
+                  </label>
+                  <div class="library-type-actions">
+                    <button id="feature-detect" class="tool-button isolate-button data-processing-control" type="button" disabled title="Detect flat planes on the library and isolated scanbodies">
+                      <svg viewBox="0 0 24 24"><path d="M4 18 9 6l5 12 3-8 3 8M4 18h16"/></svg>
+                      Feature Detect
+                    </button>
+                    <button id="crop-scanbodies" class="tool-button isolate-button data-processing-control" type="button" disabled title="Crop the library and isolated scanbodies to within 4.6 mm of the detected top ring, then run Feature Detect again">
+                      <svg viewBox="0 0 24 24"><path d="M6 3v15h15M6 14l5-5m3-3 4-4M14 6h4v4"/></svg>
+                      Crop SBs
+                    </button>
+                    <button id="register-scanbodies" class="tool-button register-button data-processing-control" type="button" disabled title="Run type-specific initial alignment">
+                      <svg viewBox="0 0 24 24"><path d="M7 7h10v10H7zM3 12h4m10 0h4M12 3v4m0 10v4"/><circle cx="12" cy="12" r="2"/></svg>
+                      Initial Alignment
+                    </button>
+                  </div>
+                </div>
+              </div>
               <button id="refine-registration" class="tool-button register-button data-processing-control" type="button" disabled title="Refine prepared alignments with ICP and generate deviation maps">
                 <svg viewBox="0 0 24 24"><path d="M4 12h4l2-5 4 10 2-5h4"/><circle cx="12" cy="12" r="9"/></svg>
                 2 ICP &amp; Deviation
@@ -354,14 +422,20 @@
           <section id="report-panel" class="report-panel" hidden>
             <header class="report-panel-header">
               <div>
-                <span>REFINED ALIGNMENT REPORT</span>
-                <h2>Trueness Deviation Statistics</h2>
+                <span id="report-panel-kicker">TRUENESS REPORT</span>
+                <h2 id="report-panel-title">Trueness Deviation Statistics</h2>
               </div>
-              <p>Scanbody origin distances from each aligned test scan to its matched reference scan, grouped by test group.</p>
+              <div class="report-header-actions">
+                <p id="report-panel-description">Scanbody origin distances from each aligned test scan to its matched reference scan, grouped by test group.</p>
+                <div id="report-mode-toggle" class="report-mode-toggle" role="group" aria-label="Report view">
+                  <button class="workflow-toggle-button active" type="button" data-report-mode="trueness">Trueness</button>
+                  <button class="workflow-toggle-button" type="button" data-report-mode="precision">Precision</button>
+                </div>
+              </div>
             </header>
             <div id="report-summary-cards" class="report-summary-cards"></div>
             <div id="report-content" class="report-content">
-              <div class="report-empty">Run 1 Initial Alignment or 2 Refined Alignment to generate report statistics.</div>
+              <div class="report-empty">Run Kabsch Align or ICP Align to generate trueness statistics.</div>
             </div>
           </section>
 
@@ -403,8 +477,8 @@
         <header class="matrix-window-header">
           <div>
             <span>ACCURACY ASSESSMENT</span>
-            <h2 id="assessment-alignment-window-title">Initial Alignment Distances</h2>
-            <p>Post-alignment test scanbody origin distance to the matched reference scanbody</p>
+            <h2 id="assessment-alignment-window-title">Trueness Distances</h2>
+            <p id="assessment-alignment-window-description">Post-alignment test scanbody origin distance to the matched reference scanbody</p>
           </div>
           <div class="matrix-window-actions">
             <button id="close-assessment-alignment-report" class="matrix-close-button" type="button" aria-label="Close alignment report">
@@ -416,6 +490,6 @@
       </div>
     </div>
 
-    <script type="module" src="{{ url_for('static', filename='app.js', v='93') }}"></script>
+    <script type="module" src="{{ url_for('static', filename='app.js', v='111') }}"></script>
   </body>
 </html>
