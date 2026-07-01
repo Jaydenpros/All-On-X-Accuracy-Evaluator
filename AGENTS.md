@@ -54,6 +54,7 @@ Quick verification:
 
 ```bash
 /Users/Jaden/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node --check static/app.js
+/Users/Jaden/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node work/assessment_kabsch_origin_tests.mjs
 git diff --check
 curl -sS http://127.0.0.1:5001/
 ```
@@ -85,6 +86,7 @@ If changing `static/app.js` or `static/styles.css`, bump the matching `v=` query
 `templates/index.html` contains three modules:
 
 - Data Processing sidebar:
+  - `#data-library-color`, `#data-scans-color`
   - `#library-input`, `#library-drop-zone`, `#library-list`
   - `#scans-input`, `#scans-drop-zone`, `#scans-list`
   - `#clear-scans`
@@ -100,22 +102,28 @@ If changing `static/app.js` or `static/styles.css`, bump the matching `v=` query
 - Shared viewport/toolbar:
   - `#scene-canvas`
   - `#object-hover-label`
+  - `#reset-data-processing` — restores the Data Processing scene to the last imported library/full-arch scan files while keeping uploads
   - `#fit-view`, `#reset-view`, `#center-library`
   - `#isolate-scanbodies`
-  - `#register-scanbodies`
+  - `#library-type-toggle`, `#library-type-panel`, `#library-type-select`
+  - `#feature-detect`, `#crop-scanbodies`, `#register-scanbodies` inside the Library Type panel
   - `#refine-registration`
   - `#plane-refinement`
   - `#show-registration-matrices`
-  - `#initial-assessment-alignment` labeled `1 Initial Alignment`
-  - `#refined-assessment-alignment` labeled `2 Refined Alignment`
-  - `#show-assessment-alignment-report`
+  - `#deviation-color-map-toggle`
+  - `#initial-assessment-alignment` labeled `Kabsch Align`
+  - `#refined-assessment-alignment` labeled `ICP Align`
+  - `#show-assessment-alignment-report` labeled `Trueness Report`
+  - `#assessment-workflow-toggle` switches between `Trueness` and `Precision` modes
+  - `#precision-measure` and `#precision-report` are shown only in Precision Assessment mode
   - `#assessment-registration-status`
-  - `#wireframe-toggle`, `#grid-toggle`
+  - `#wireframe-toggle`, `#grid-toggle`, `#feature-seed-arrows-toggle`
   - `#objects-panel`, `#data-objects-list`, `#assessment-objects-list`
   - `#deviation-legend`
   - `#registration-matrix-window`
 - Report viewport:
   - `#report-panel`
+  - `#report-mode-toggle` switches between Trueness and Precision report views
   - `#report-summary-cards`
   - `#report-content`
 
@@ -166,27 +174,36 @@ Scene/UI:
 - `updateSceneReference()`, `fitView()`, `centerLibraryView()`
 - `createModelRow()`, `createObjectRow()`, `createScanGroup()`
 - visibility helpers for individual models, scan groups, assessment groups, and datasets.
+- Data Processing import snapshots are stored in `dataProcessingImportSnapshots`; `resetDataProcessingOperations()` rebuilds the scene from those snapshots and removes derived isolation/feature/registration/deviation state.
+- Object tree groups are collapsed by default.
 
 Scanbody isolation:
 
 - `isolateGeometry()` splits connected triangle components.
-- `groupNearbyComponents(..., distance = 5)` merges components within 5 mm.
+- `groupNearbyComponents(..., distance = 2)` merges components within 2 mm.
+- `filterSmallComponents(..., minimumDimension = 3)` removes merged components whose largest bounding-box dimension is under 3 mm.
 - `mergeGeometries()` combines grouped components.
 - `isolateScanbodies()` replaces full-arch scans with isolated `SB1`, `SB2`, etc. children.
+- `SCANBODY_LIBRARY_STRATEGIES` routes Data Processing Feature Detect, Crop SBs, and Initial Alignment by selected library type.
+- `inferScanbodyLibraryTypeFromName()` auto-selects `Straumann SRA Old` when the uploaded library filename contains `Straumann SRA Old`.
+- `straumann-sra-new` uses the baseline top-ring + rectangular side-face Feature Detect classifier.
+- `straumann-sra-old` uses an axis-first Feature Detect path: iterative wall-only normal scatter for long axis, wall-circle fit for center/radius, cap-side axis orientation, top-plane selection near the height maximum, hole radius from the low-percentile top radial distribution, and RANSAC bevel detection with a 0.12 mm distance gate, 10 degree normal gate, and 0.02 mm planar RMS quality gate.
+- `cropScanbodies()` runs through the selected strategy and currently crops both the library and isolated scanbodies to triangles within 4.6 mm of each object's detected top-ring plane, then runs Feature Detect again.
 
 Registration/deviation:
 
 - `sampleGeometryPoints()`, `buildKdTree()`, `nearestPoint()`
 - `bestRigidTransform()` computes rigid transform from paired points.
-- `detectPlanarPatches()`, `dominantPerpendicularPair()`, `planeAlignedInitialMatrices()`
-- `prepareRegistration()` creates multi-start initial candidates.
+- `detectPlanarPatches()`, `classifyFeaturePlanes()`, `planePatchShapeMetrics()`
+- `prepareFeatureRegistration()` creates initial candidates from detected long axis, top-ring plane, and side plane only.
+- `registerIsolatedScanbodies()` runs through the selected library type strategy and currently uses `prepareFeatureRegistration()`.
 - `refineRegistration()` runs ICP.
 - `registerIsolatedScanbodies()` creates initial registered library copies.
 - `refineInitialRegistrations()` runs ICP and deviation mapping.
 - `planeRefinementMatrix()` / `refineRegistrationPlanes()` perform top/side plane refinement.
-- After plane refinement, `renamePlaneRefinedScanbodySequences()` renames isolated scanbodies as `FullArch_SB1.stl`, `FullArch_SB2.stl`, etc. using virtual arch sequencing from registered library-copy positions/orientations; it does not move meshes or change matrices.
-- `colorizeDeviationEntry()`, `setDeviationScale()`, `applyDeviationMap()` handle deviation colors.
-- `renderRegistrationMatrices()`, `exportRegistrationMatrices()` handle matrix modal/export.
+- After initial alignment and again after plane refinement, `renameRegisteredScanbodySequences()` renames isolated scanbodies as `FullArch_SB1.stl`, `FullArch_SB2.stl`, etc. using virtual arch sequencing from registered library-copy positions/orientations; it does not move meshes or change matrices.
+- `colorizeDeviationEntry()`, `setDeviationScale()`, `applyDeviationMap()`, `applyDeviationColorMapVisibility()` handle deviation colors and the color-map display toggle.
+- `renderRegistrationMatrices()`, `registrationExportData()`, `exportRegistrationMatrices()` handle matrix modal/export from initial, ICP, and plane-refined stages; the open modal refreshes after each stage.
 
 Accuracy Assessment:
 
@@ -195,31 +212,44 @@ Accuracy Assessment:
 - `initializeAssessmentDataGroups()` creates reference + first test group.
 - `importAssessmentLibrary()` imports the library STL.
 - `importAssessmentJsonFiles()` imports reference/test JSON files.
+- Test groups auto-name from the first imported JSON filename until the user manually edits the group name.
 - `rebuildAssessmentScene()` clones the assessment library for each scanbody matrix.
 - `setAssessmentDataGroupColor()` updates reference/test colors.
 
 Accuracy Assessment alignment:
 
-- UI: `#initial-assessment-alignment`, `#refined-assessment-alignment`, and `#show-assessment-alignment-report` in the viewport toolbar.
-- `#initial-assessment-alignment` runs SB-origin rigid Kabsch; `#refined-assessment-alignment` runs rigid surface ICP after initial alignment.
+- UI: `#assessment-workflow-toggle` selects Trueness or Precision actions in the viewport toolbar.
+- Trueness UI: `#assessment-kabsch-mode`, `#initial-assessment-alignment`, `#refined-assessment-alignment`, and `#show-assessment-alignment-report`.
+- `#assessment-kabsch-mode` selects stock `Origins only (current)` or `Origins · RMS-weighted` Kabsch for `#initial-assessment-alignment`; `#assessment-kabsch-weighting` selects inverse-variance, inverse, or off weighting for the weighted mode.
+- `#refined-assessment-alignment` runs rigid surface ICP after initial alignment.
 - `assessmentScanbodyPairs()` pairs scanbodies by order only: SB1 to SB1, SB2 to SB2, etc.
-- `assessmentKabschRigidTransform()` solves the best-fit rigid matrix using a Kabsch-style quaternion/eigen solution.
-- `assessmentInitialScanAlignment(sourceScan, targetScan)` computes one rigid full-arch transform from SB-number matched scanbody origins only, and records each aligned test SB origin distance to the matched reference SB origin.
+- `assessmentKabschRigidTransform()` solves the best-fit rigid matrix using a Kabsch-style quaternion/eigen solution and accepts optional per-point weights.
+- `assessmentInitialScanAlignment(sourceScan, targetScan, { mode, weightMode })` computes one rigid full-arch transform from SB-number matched scanbody origins only.
+- RMS-weighted origins mode uses the same origin correspondences as stock Kabsch, but can weight each scanbody by inverse-variance or inverse RMS when RMS values are present.
+- `work/assessment_kabsch_origin_tests.mjs` covers stock-vs-off regression, local orientation independence, identity, known-transform recovery, and positive determinant.
 - `runAssessmentInitialAlignment()` initially aligns every test scan to the best reference scan candidate.
 - `runAssessmentRefinedAlignment()` samples reconstructed library STL surfaces for each test/reference scan, solves one rigid ICP delta per test scan, composes it onto the scan-level matrix, and applies deviation color maps to test scanbodies.
 - `refreshAssessmentAlignmentReportData()` recomputes per-scanbody distances after each initial/refined alignment, and `renderAssessmentAlignmentReport()` displays them in `#assessment-alignment-window`.
+- Precision UI: `#precision-measure` and `#precision-report`.
+- `assessmentScanPairsForDataset(datasetId)` builds unordered scan pairs within one test group only.
+- `assessmentPrecisionPairMeasurement(sourceScan, targetScan)` computes a virtual Kabsch transform from scan A SB origins to scan B SB origins, then measures post-alignment SB origin distances.
+- `runAssessmentPrecisionMeasure()` stores results on each test dataset as `dataset.precisionAssessment`; it does not update scan registration matrices, scene object positions, colors, visibility, origin axes, or deviation maps.
+- `renderAssessmentPrecisionReport()` displays within-group pairwise distances in `#assessment-alignment-window`.
 
 Report module:
 
-- `collectAssessmentReportData()` groups Alignment Report scanbody distances by test group and scan.
-- `renderReportModule()` renders descriptive statistics tables and SVG box plots in `#report-panel`.
-- Report data comes from `scan.assessmentRegistration.scanbodyDistances`, so it refreshes after every initial or refined alignment.
+- `#report-mode-toggle` switches Report between Trueness and Precision.
+- Trueness uses `collectTruenessReportData()` / `scan.assessmentRegistration.scanbodyDistances`.
+- Precision uses `collectPrecisionReportData()` / `dataset.precisionAssessment.pairs`.
+- `renderReportModule()` routes to `renderTruenessReportModule()` or `renderPrecisionReportModule()`, each with summary cards, group comparisons, statistics tables, and SVG box plots in `#report-panel`.
+- Trueness report data refreshes after every Kabsch or ICP alignment. Precision report data refreshes after `Precision Measure`.
 - The whole full-arch test scan moves rigidly; inter-scanbody relationships inside that scan must not change.
+- Precision measurement is virtual-only and must not move full-arch scanbody meshes.
 - Registrations are cleared if reference data changes.
 
 ## Local origin markers
 
-Small local XYZ axes and 0.1 mm origin spheres are attached to library-derived meshes:
+Small local XYZ axes and 0.1 mm origin spheres are attached to library-derived meshes. The marker axes and sphere use the entry/group color rather than fixed XYZ colors:
 
 - `LIBRARY_ORIGIN_TYPES`
 - `addLocalOriginAxes(entry)`
